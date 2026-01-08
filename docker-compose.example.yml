@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  probixel:
+    image: kfalabs/probixel:latest
+    # Or use GitHub Container Registry:
+    # image: ghcr.io/kfalabs/probixel:latest
+    container_name: probixel
+    restart: unless-stopped
+    
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    
+    # Optional: use host network to monitor services running on the host
+    # network_mode: "host"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "/app/probixel", "-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
