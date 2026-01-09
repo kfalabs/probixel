@@ -127,6 +127,7 @@ Monitors HTTP/HTTPS endpoints with optional "intelligent" response validation.
   ```yaml
   - name: "Web Service"
     type: "http"
+    interval: "5m" # Required if the global `default_interval` is not set
     url: "https://example.test"
     http: # Optional HTTP block.
       method: "GET" # Optional, defaults to GET.
@@ -174,6 +175,7 @@ If the `certificate_expiry` and `match_data` are both provided, the probe will r
   ```yaml
   - name: "TLS Check"
     type: "tls"
+    interval: "5m" # Required if the global `default_interval` is not set
     url: "tls://example.test"
     tls:
       insecure_skip_verify: true # Optional, defaults to false. Set to true for self-signed or invalid certificates.
@@ -195,6 +197,7 @@ Checks TCP port connectivity.
   ```yaml
   - name: "TCP Check"
     type: "tcp"
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["host1:port1", "host2:port2"] #Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
@@ -214,6 +217,7 @@ Verifies UDP port reachability.
   ```yaml
   - name: "Remote Syslog"
     type: "udp"
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["syslog.example.com:514", "syslog2.example.com:514"] #Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
@@ -231,6 +235,7 @@ Verifies UDP port reachability.
   ```yaml
   - name: "DNS Servers"
     type: "dns"
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["8.8.8.8:53", "1.1.1.1:53"]
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     dns:
@@ -248,6 +253,7 @@ Verifies UDP port reachability.
   ```yaml
   - name: "Ping Targets"
     type: "ping"
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["host1", "host2"] #Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
@@ -264,6 +270,7 @@ Verifies UDP port reachability.
   ```yaml
   - name: "Local Health Check"
     type: "host"
+    interval: "5m" # Required if the global `default_interval` is not set
     monitor_endpoint:
       success:
         url: "https://uptime.probixel.test/api/push/success?duration={%duration%}ms"
@@ -282,7 +289,8 @@ Monitors a WireGuard connection's health using a userspace stack (no root requir
   ```yaml
   - name: "VPN Tunnel"
     type: "wireguard"
-    targets: ["1.1.1.1:53"] # Required if max_age is not set. Can do a ping or a tcp check if port is specified.
+    interval: "5m" # Required if the global `default_interval` is not set
+    targets: ["1.1.1.1:53"] # Required if max_age is not set. Can do a ping or a tcp check (if port is specified).
     wireguard:
       endpoint: "vpn.example.local:51820"
       public_key: "..."
@@ -307,6 +315,7 @@ Monitors a WireGuard connection's health using a userspace stack (no root requir
   ```yaml
   - name: "Web Certificate"
     type: "tls"
+    interval: "5m" # Required if the global `default_interval` is not set
     url: "tls://kfalabs.com:443"
     tls:
       certificate_expiry: "14d"
@@ -324,6 +333,7 @@ Monitors a WireGuard connection's health using a userspace stack (no root requir
   ```yaml
   - name: "Docker Service"
     type: "docker"
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["web-container"]
     docker:
       socket: "local"
