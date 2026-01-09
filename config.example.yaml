@@ -1,0 +1,103 @@
+# Probixel Configuration Example
+# This example demonstrates the hybrid flattened/nested structure.
+# Common fields: url, targets, interval, monitor_endpoint
+# Monitor-specific fields: grouped in dedicated blocks (http:, tcp:, dns:, etc.)
+
+global:
+  default_interval: "5m"
+  monitor_endpoint:
+    headers:
+      Authorization: "Bearer your-common-token"
+
+docker-sockets: # Optional, only used for docker service monitoring.
+  local:
+    socket: "/var/run/docker.sock"
+  remote:
+    host: "docker-proxy"
+    port: 2375
+    protocol: "http" # Optional, defaults to http
+    headers: # Optional headers for the proxy
+      Authorization: "Basic your-base64-token"
+
+services:
+  - name: "Main Website"
+    type: "http"
+    url: "https://probixel.example"
+    interval: "1m"
+    http:
+      method: "GET"
+      accepted_status_codes: "200-299"
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/success?duration={%duration%}"
+
+  - name: "Database Cluster"
+    type: "tcp"
+    targets: ["db1.example.com:5432", "db2.example.com:5432"]
+    target_mode: "any"
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/db?status=up"
+
+  - name: "Public DNS"
+    type: "dns"
+    targets: ["8.8.8.8:53", "1.1.1.1:53"]
+    target_mode: "any"
+    dns:
+      domain: "google.com"
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/dns?status=up"
+
+  - name: "Internal Servers"
+    type: "ping"
+    targets: ["10.0.0.1", "10.0.0.2"]
+    target_mode: "all"
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/ping?status=up"
+
+  - name: "Local Health Check"
+    type: "host"
+    targets: ["localhost"]
+    target_mode: "any"
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/host?status=up"
+
+  - name: "Web Certificate"
+    type: "tls"
+    url: "tls://probixel.test:443"
+    tls:
+      certificate_expiry: "14d"
+      insecure_skip_verify: false
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/tls?status=up"
+
+  - name: "Docker Service"
+    type: "docker"
+    targets: ["web-container"]
+    docker:
+      socket: "local"
+      healthy: true
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/docker?status=up"
+
+  - name: "VPN Tunnel"
+    type: "wireguard"
+    targets: ["1.1.1.1:53"]
+    wireguard:
+      endpoint: "vpn.example.local:51820"
+      public_key: "..."
+      private_key: "..."
+      preshared_key: "..."
+      addresses: "10.64.222.21/32"
+      allowed_ips: "0.0.0.0/0,::/0"
+      max_age: "10m"
+      success_on_heartbeat: true
+      persistent_keepalive: 25
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/vpn?status=up"

@@ -1,0 +1,41 @@
+# Git files
+.git
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Test files
+*_test.go
+
+# Build artifacts
+probixel
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files (don't copy into image)
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Config files (will be mounted as volumes)
+config.yaml
+
+# Temporary files
+tmp/
+temp/
+*.tmp

@@ -1,0 +1,29 @@
+# Build artifacts
+probixel
+*.exe
+*.dll
+*.so
+*.dylib
+coverage.out
+coverage.html
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Config files
+config.yaml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.pid
+*.out
