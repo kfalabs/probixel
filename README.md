@@ -208,6 +208,7 @@ Monitors HTTP/HTTPS endpoints with optional "intelligent" response validation.
 - **Example**:
   ```yaml
     type: "http"
+    interval: "5m" # Required if the global `default_interval` is not set
     url: "https://example.test"
     timeout: "5s" # Optional service-level timeout, defaults to 5s.
     tunnel: "office-vpn" # Optional, tunnel name.
@@ -267,6 +268,7 @@ If the `certificate_expiry` and `match_data` are both provided, the probe will r
   ```yaml
   - name: "TLS Check"
     type: "tls"
+    interval: "5m" # Required if the global `default_interval` is not set
     url: "tls://example.test"
     timeout: "5s" # Optional service-level timeout, defaults to 5s.
     tunnel: "office-vpn" # Optional, tunnel name.
@@ -292,6 +294,7 @@ Checks TCP port connectivity.
     type: "tcp"
     tunnel: "office-vpn" # Optional, tunnel name.
     timeout: "5s" # Optional service-level timeout, defaults to 5s.
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["host1:port1", "host2:port2"] #Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
@@ -313,6 +316,7 @@ Verifies UDP port reachability.
     type: "udp"
     tunnel: "office-vpn" # Optional, tunnel name.
     timeout: "5s" # Optional, defaults to 5s.
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["syslog.example.com:514", "syslog2.example.com:514"] #Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
@@ -331,6 +335,7 @@ Verifies UDP port reachability.
   - name: "DNS Servers"
     type: "dns"
     tunnel: "office-vpn" # Optional, tunnel name.
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["8.8.8.8:53", "1.1.1.1:53"]
     timeout: "5s" # Optional, defaults to 5s.
     dns:
@@ -350,6 +355,7 @@ Verifies UDP port reachability.
     type: "ping"
     tunnel: "office-vpn" # Optional, tunnel name.
     timeout: "5s" # Optional, defaults to 5s.
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["host1", "host2"] #Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
@@ -366,6 +372,7 @@ Verifies UDP port reachability.
   ```yaml
   - name: "Local Health Check"
     type: "host"
+    interval: "5m" # Required if the global `default_interval` is not set
     monitor_endpoint:
       success:
         url: "https://uptime.probixel.test/api/push/success?duration={%duration%}ms"
@@ -405,6 +412,8 @@ Monitors a WireGuard VPN tunnel health via handshake timestamps. No external tar
   - name: "Personal VPN Heartbeat"
     type: "wireguard"
     tunnel: "office-vpn" # Use the tunnel defined in the root tunnels block
+    interval: "5m" # Required if the global `default_interval` is not set
+    targets: ["1.1.1.1:53"] # Required if max_age is not set. Can do a ping or a tcp check (if port is specified).
     wireguard:
       max_age: "5m"
     monitor_endpoint:
@@ -473,6 +482,7 @@ Monitors SSH connectivity and optionally performs authentication.
   ```yaml
   - name: "Docker Service"
     type: "docker"
+    interval: "5m" # Required if the global `default_interval` is not set
     targets: ["web-container"]
     timeout: "5s" # Optional, defaults to 5s.
     docker:
