@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"probixel/pkg/tunnels"
 	"strings"
 	"testing"
+	"time"
 )
 
 type mockConn struct {
@@ -168,4 +170,25 @@ func TestTCPProbe_Check_EmptyTargetsFiller(t *testing.T) {
 
 	p.SetTargetMode(TargetModeAll)
 	_, _ = p.Check(context.Background(), " , target:80 ")
+}
+func TestTCPProbe_Stabilization(t *testing.T) {
+	mt := &tunnels.MockTunnel{IsStabilizedResult: false}
+	probe := &TCPProbe{}
+	probe.SetTunnel(mt)
+
+	res, err := probe.Check(context.Background(), "localhost:8080")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Pending {
+		t.Error("Expected Pending: true")
+	}
+}
+
+func TestTCPProbe_SetTimeout(t *testing.T) {
+	p := &TCPProbe{}
+	p.SetTimeout(10 * time.Second)
+	if p.Timeout != 10*time.Second {
+		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
+	}
 }

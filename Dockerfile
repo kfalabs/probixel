@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} \
     CGO_ENABLED=0 go build -a -installsuffix cgo \
     -ldflags='-w -s -extldflags "-static"' \
-    -o probixel ./cmd/agent
+    -o probixel ./cmd
 
 # Final stage - use alpine for minimal size.
 FROM alpine:3

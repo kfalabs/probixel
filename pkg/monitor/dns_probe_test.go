@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"probixel/pkg/tunnels"
 	"strings"
 	"testing"
 	"time"
@@ -189,4 +190,25 @@ func TestDNSProbe_Check_EmptyTargets(t *testing.T) {
 	ctx := context.Background()
 	probe.SetTargetMode(TargetModeAll)
 	_, _ = probe.Check(ctx, "8.8.8.8, , 1.1.1.1")
+}
+func TestDNSProbe_Stabilization(t *testing.T) {
+	mt := &tunnels.MockTunnel{IsStabilizedResult: false}
+	probe := &DNSProbe{}
+	probe.SetTunnel(mt)
+
+	res, err := probe.Check(context.Background(), "8.8.8.8")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Pending {
+		t.Error("Expected Pending: true")
+	}
+}
+
+func TestDNSProbe_SetTimeout(t *testing.T) {
+	p := &DNSProbe{}
+	p.SetTimeout(10 * time.Second)
+	if p.Timeout != 10*time.Second {
+		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
+	}
 }

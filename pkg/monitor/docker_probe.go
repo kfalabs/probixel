@@ -10,13 +10,21 @@ import (
 	"time"
 
 	"probixel/pkg/config"
+	"probixel/pkg/tunnels"
 )
 
 type DockerProbe struct {
-	Sockets    map[string]config.DockerSocketConfig
-	SocketName string
-	Healthy    bool
-	targetMode string
+	Sockets     map[string]config.DockerSocketConfig
+	SocketName  string
+	Healthy     bool
+	targetMode  string
+	Timeout     time.Duration
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	tunnel      tunnels.Tunnel
+}
+
+func (p *DockerProbe) SetTunnel(t tunnels.Tunnel) {
+	p.tunnel = t
 }
 
 func (p *DockerProbe) Name() string {
@@ -30,6 +38,17 @@ func (p *DockerProbe) SetTargetMode(mode string) {
 func (p *DockerProbe) Check(ctx context.Context, target string) (Result, error) {
 	start := time.Now()
 	targets := strings.Split(target, ",")
+
+	// Strict stabilization adherence: always return Pending if tunnel not stabilized
+	if p.tunnel != nil && !p.tunnel.IsStabilized() {
+		return Result{
+			Success:   false,
+			Pending:   true,
+			Duration:  time.Since(start),
+			Message:   fmt.Sprintf("waiting for tunnel %q to stabilize", p.tunnel.Name()),
+			Timestamp: start,
+		}, nil
+	}
 
 	cfg, ok := p.Sockets[p.SocketName]
 	if !ok {
@@ -175,7 +194,11 @@ func (p *DockerProbe) getClient(cfg config.DockerSocketConfig) (*http.Client, st
 			},
 		}
 		// When using unix socket, the host in the URL is ignored but must be present
-		return &http.Client{Transport: tr, Timeout: 5 * time.Second}, "http://localhost", nil
+		timeout := p.Timeout
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		return &http.Client{Transport: tr, Timeout: timeout}, "http://localhost", nil
 	}
 
 	if cfg.Host != "" && cfg.Port != 0 {
@@ -184,8 +207,21 @@ func (p *DockerProbe) getClient(cfg config.DockerSocketConfig) (*http.Client, st
 			protocol = "http"
 		}
 		apiURL := fmt.Sprintf("%s://%s:%d", protocol, cfg.Host, cfg.Port)
-		return &http.Client{Timeout: 5 * time.Second}, apiURL, nil
+
+		tr := &http.Transport{}
+		if p.DialContext != nil {
+			tr.DialContext = p.DialContext
+		}
+
+		timeout := p.Timeout
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		return &http.Client{Transport: tr, Timeout: timeout}, apiURL, nil
 	}
 
 	return nil, "", fmt.Errorf("invalid docker socket configuration: must provide either socket path or host/port")
+}
+func (p *DockerProbe) SetTimeout(timeout time.Duration) {
+	p.Timeout = timeout
 }

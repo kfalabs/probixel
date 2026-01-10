@@ -6,14 +6,23 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"probixel/pkg/tunnels"
 )
 
 const DEFAULT_DOMAIN = "google.com"
 
 type DNSProbe struct {
-	Resolve    func(ctx context.Context, nameserver, host string) ([]string, error)
-	targetMode string
-	domain     string
+	Resolve     func(ctx context.Context, nameserver, host string) ([]string, error)
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	Timeout     time.Duration
+	targetMode  string
+	domain      string
+	tunnel      tunnels.Tunnel
+}
+
+func (p *DNSProbe) SetTunnel(t tunnels.Tunnel) {
+	p.tunnel = t
 }
 
 func (p *DNSProbe) Name() string {
@@ -35,6 +44,17 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 	var lastErr error
 
 	startTotal := time.Now()
+
+	// Strict stabilization adherence: always return Pending if tunnel not stabilized
+	if p.tunnel != nil && !p.tunnel.IsStabilized() {
+		return Result{
+			Success:   false,
+			Pending:   true,
+			Duration:  time.Since(startTotal),
+			Message:   fmt.Sprintf("waiting for tunnel %q to stabilize", p.tunnel.Name()),
+			Timestamp: startTotal,
+		}, nil
+	}
 
 	// For "all" mode, track successes
 	if p.targetMode == TargetModeAll {
@@ -65,11 +85,20 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 			if p.Resolve != nil {
 				ips, err = p.Resolve(ctx, nameserver, domainToResolve)
 			} else {
+				dialer := p.DialContext
+				if dialer == nil {
+					timeout := p.Timeout
+					if timeout == 0 {
+						timeout = 5 * time.Second
+					}
+					d := net.Dialer{Timeout: timeout}
+					dialer = d.DialContext
+				}
+
 				r := &net.Resolver{
 					PreferGo: true,
 					Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-						d := net.Dialer{Timeout: 2 * time.Second}
-						return d.DialContext(ctx, "udp", nameserver)
+						return dialer(ctx, "udp", nameserver)
 					},
 				}
 				ips, err = r.LookupHost(ctx, domainToResolve)
@@ -78,8 +107,7 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 					rTCP := &net.Resolver{
 						PreferGo: true,
 						Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-							d := net.Dialer{Timeout: 2 * time.Second}
-							return d.DialContext(ctx, "tcp", nameserver)
+							return dialer(ctx, "tcp", nameserver)
 						},
 					}
 					ips, err = rTCP.LookupHost(ctx, domainToResolve)
@@ -134,11 +162,20 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 		if p.Resolve != nil {
 			ips, err = p.Resolve(ctx, nameserver, domainToResolve)
 		} else {
+			dialer := p.DialContext
+			if dialer == nil {
+				timeout := p.Timeout
+				if timeout == 0 {
+					timeout = 5 * time.Second
+				}
+				d := net.Dialer{Timeout: timeout}
+				dialer = d.DialContext
+			}
+
 			r := &net.Resolver{
 				PreferGo: true,
 				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-					d := net.Dialer{Timeout: 2 * time.Second}
-					return d.DialContext(ctx, "udp", nameserver)
+					return dialer(ctx, "udp", nameserver)
 				},
 			}
 			ips, err = r.LookupHost(ctx, domainToResolve)
@@ -156,11 +193,20 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 
 		// Retry DNS resolution with TCP if UDP failed
 		if p.Resolve == nil {
+			dialer := p.DialContext
+			if dialer == nil {
+				timeout := p.Timeout
+				if timeout == 0 {
+					timeout = 5 * time.Second
+				}
+				d := net.Dialer{Timeout: timeout}
+				dialer = d.DialContext
+			}
+
 			rTCP := &net.Resolver{
 				PreferGo: true,
 				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-					d := net.Dialer{Timeout: 2 * time.Second}
-					return d.DialContext(ctx, "tcp", nameserver)
+					return dialer(ctx, "tcp", nameserver)
 				},
 			}
 			ips, err = rTCP.LookupHost(ctx, domainToResolve)
@@ -184,4 +230,7 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 		Message:   fmt.Sprintf("all dns targets failed, last error: %v", lastErr),
 		Timestamp: startTotal,
 	}, nil
+}
+func (p *DNSProbe) SetTimeout(timeout time.Duration) {
+	p.Timeout = timeout
 }

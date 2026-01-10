@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"probixel/pkg/tunnels"
 	"strings"
 	"testing"
 	"time"
@@ -171,5 +172,26 @@ func generateTestCert(t *testing.T, template x509.Certificate) tls.Certificate {
 	return tls.Certificate{
 		Certificate: [][]byte{derBytes},
 		PrivateKey:  priv,
+	}
+}
+func TestTLSProbe_Stabilization(t *testing.T) {
+	mt := &tunnels.MockTunnel{IsStabilizedResult: false}
+	probe := &TLSProbe{}
+	probe.SetTunnel(mt)
+
+	res, err := probe.Check(context.Background(), "localhost:443")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Pending {
+		t.Error("Expected Pending: true")
+	}
+}
+
+func TestTLSProbe_SetTimeout(t *testing.T) {
+	p := &TLSProbe{}
+	p.SetTimeout(10 * time.Second)
+	if p.Timeout != 10*time.Second {
+		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
 	}
 }

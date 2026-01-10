@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"probixel/pkg/config"
+	"probixel/pkg/tunnels"
 
 	"github.com/tidwall/gjson"
 )
@@ -23,6 +25,13 @@ type HTTPProbe struct {
 	Method              string            // HTTP method
 	Headers             map[string]string // HTTP headers for the probe itself
 	ExpiryThreshold     time.Duration     // Threshold for TLS expiry check
+	Timeout             time.Duration     // Timeout for HTTP requests
+	DialContext         func(ctx context.Context, network, address string) (net.Conn, error)
+	tunnel              tunnels.Tunnel
+}
+
+func (p *HTTPProbe) SetTunnel(t tunnels.Tunnel) {
+	p.tunnel = t
 }
 
 func (p *HTTPProbe) Name() string {
@@ -38,13 +47,32 @@ func (p *HTTPProbe) Check(ctx context.Context, target string) (Result, error) {
 	target = strings.TrimSpace(target)
 	start := time.Now()
 
+	// Strict stabilization adherence: always return Pending if tunnel not stabilized
+	if p.tunnel != nil && !p.tunnel.IsStabilized() {
+		return Result{
+			Success:   false,
+			Pending:   true,
+			Duration:  time.Since(start),
+			Message:   fmt.Sprintf("waiting for tunnel %q to stabilize", p.tunnel.Name()),
+			Timestamp: start,
+		}, nil
+	}
+
 	// Create a custom client to handle timeouts and insecure skip verify if needed
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: p.InsecureSkipVerify}, //nolint:gosec // G402: Optional skip for untrusted endpoints
+		DialContext:     p.DialContext,
 	}
+
+	// Use configured timeout, default to 5 seconds
+	timeout := p.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
 	client := &http.Client{
 		Transport: tr,
-		Timeout:   10 * time.Second, // Global timeout for the request
+		Timeout:   timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return nil // Follow redirects by default
 		},
@@ -309,4 +337,7 @@ func (p *HTTPProbe) checkStatusCode(code int) bool {
 	}
 
 	return false
+}
+func (p *HTTPProbe) SetTimeout(timeout time.Duration) {
+	p.Timeout = timeout
 }

@@ -7,12 +7,21 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"probixel/pkg/tunnels"
 )
 
 type TLSProbe struct {
 	targetMode         string
 	ExpiryThreshold    time.Duration
 	InsecureSkipVerify bool
+	Timeout            time.Duration
+	DialContext        func(ctx context.Context, network, address string) (net.Conn, error)
+	tunnel             tunnels.Tunnel
+}
+
+func (p *TLSProbe) SetTunnel(t tunnels.Tunnel) {
+	p.tunnel = t
 }
 
 func (p *TLSProbe) Name() string {
@@ -26,6 +35,17 @@ func (p *TLSProbe) SetTargetMode(mode string) {
 func (p *TLSProbe) Check(ctx context.Context, target string) (Result, error) {
 	var lastErr error
 	startTotal := time.Now()
+
+	// Strict stabilization adherence: always return Pending if tunnel not stabilized
+	if p.tunnel != nil && !p.tunnel.IsStabilized() {
+		return Result{
+			Success:   false,
+			Pending:   true,
+			Duration:  time.Since(startTotal),
+			Message:   fmt.Sprintf("waiting for tunnel %q to stabilize", p.tunnel.Name()),
+			Timestamp: startTotal,
+		}, nil
+	}
 
 	// Use threshold from config
 	threshold := p.ExpiryThreshold
@@ -115,15 +135,27 @@ func (p *TLSProbe) checkTarget(ctx context.Context, target string, threshold tim
 		target = net.JoinHostPort(host, "443")
 	}
 
-	dialer := &net.Dialer{
-		Timeout: 5 * time.Second,
+	dialer := p.DialContext
+	if dialer == nil {
+		timeout := p.Timeout
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		d := net.Dialer{Timeout: timeout}
+		dialer = d.DialContext
 	}
 
-	conn, err := tls.DialWithDialer(dialer, "tcp", target, &tls.Config{
+	rawConn, err := dialer(ctx, "tcp", target)
+	if err != nil {
+		return Result{}, err
+	}
+
+	conn := tls.Client(rawConn, &tls.Config{
 		InsecureSkipVerify: p.InsecureSkipVerify, // nolint:gosec // deliberate feature
 		ServerName:         host,
 	})
-	if err != nil {
+	if err := conn.HandshakeContext(ctx); err != nil {
+		_ = rawConn.Close()
 		return Result{}, err
 	}
 	defer func() { _ = conn.Close() }()
@@ -165,4 +197,7 @@ func (p *TLSProbe) checkTarget(ctx context.Context, target string, threshold tim
 		Target:    target,
 		Timestamp: start,
 	}, nil
+}
+func (p *TLSProbe) SetTimeout(timeout time.Duration) {
+	p.Timeout = timeout
 }

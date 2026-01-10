@@ -9,11 +9,15 @@ import (
 	"probixel/pkg/monitor"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Pusher struct {
-	Client *http.Client
+	Client    *http.Client
+	mu        sync.Mutex
+	lastPush  time.Time
+	rateLimit time.Duration
 }
 
 func NewPusher() *Pusher {
@@ -21,7 +25,21 @@ func NewPusher() *Pusher {
 		Client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		rateLimit: 100 * time.Millisecond,
 	}
+}
+
+func (p *Pusher) SetRateLimit(interval *string) {
+	if interval == nil || *interval == "" {
+		return
+	}
+	d, err := config.ParseDuration(*interval)
+	if err != nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rateLimit = d
 }
 
 // replaceTemplateVars replaces template variables in the URL with actual values
@@ -58,6 +76,20 @@ func replaceTemplateVars(urlStr string, result monitor.Result) string {
 }
 
 func (p *Pusher) Push(result monitor.Result, endpointCfg config.MonitorEndpointConfig, globalEndpointCfg config.GlobalMonitorEndpointConfig) error {
+	if result.SkipNotification || result.Pending {
+		return nil
+	}
+	// Enforce rate limit
+	p.mu.Lock()
+	if p.rateLimit > 0 {
+		elapsed := time.Since(p.lastPush)
+		if elapsed < p.rateLimit {
+			time.Sleep(p.rateLimit - elapsed)
+		}
+	}
+	p.lastPush = time.Now()
+	p.mu.Unlock()
+
 	var endpoint *config.EndpointConfig
 
 	// Determine which endpoint definition to use
@@ -103,6 +135,22 @@ func (p *Pusher) Push(result monitor.Result, endpointCfg config.MonitorEndpointC
 		req.Header.Set(k, v)
 	}
 
+	// Resolve timeout hierarchy: endpoint > service-shared > global > default (5s)
+	timeoutStr := endpoint.Timeout
+	if timeoutStr == "" {
+		timeoutStr = endpointCfg.Timeout
+	}
+	if timeoutStr == "" {
+		timeoutStr = globalEndpointCfg.Timeout
+	}
+
+	timeout := 5 * time.Second // Default
+	if timeoutStr != "" {
+		if d, err := config.ParseDuration(timeoutStr); err == nil && d > 0 {
+			timeout = d
+		}
+	}
+
 	client := p.Client
 	if endpoint.InsecureSkipVerify {
 		// Create a temporary client with insecure TLS skip
@@ -111,8 +159,13 @@ func (p *Pusher) Push(result monitor.Result, endpointCfg config.MonitorEndpointC
 		}
 		client = &http.Client{
 			Transport: tr,
-			Timeout:   10 * time.Second,
+			Timeout:   timeout,
 		}
+	} else if timeout != p.Client.Timeout {
+		// Copy client and set specific timeout
+		newClient := *p.Client
+		newClient.Timeout = timeout
+		client = &newClient
 	}
 
 	resp, err := client.Do(req)

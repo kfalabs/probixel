@@ -6,12 +6,20 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"probixel/pkg/tunnels"
 )
 
 type TCPProbe struct {
 	// DialContext allows mocking the network connection. If nil, net.Dialer is used.
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	Timeout     time.Duration
 	targetMode  string
+	tunnel      tunnels.Tunnel
+}
+
+func (p *TCPProbe) SetTunnel(t tunnels.Tunnel) {
+	p.tunnel = t
 }
 
 func (p *TCPProbe) Name() string {
@@ -27,6 +35,17 @@ func (p *TCPProbe) Check(ctx context.Context, target string) (Result, error) {
 	var lastErr error
 
 	startTotal := time.Now()
+
+	// Strict stabilization adherence: always return Pending if tunnel not stabilized
+	if p.tunnel != nil && !p.tunnel.IsStabilized() {
+		return Result{
+			Success:   false,
+			Pending:   true,
+			Duration:  time.Since(startTotal),
+			Message:   fmt.Sprintf("waiting for tunnel %q to stabilize", p.tunnel.Name()),
+			Timestamp: startTotal,
+		}, nil
+	}
 
 	// For "all" mode, track successes
 	if p.targetMode == TargetModeAll {
@@ -46,7 +65,11 @@ func (p *TCPProbe) Check(ctx context.Context, target string) (Result, error) {
 			if p.DialContext != nil {
 				conn, err = p.DialContext(ctx, "tcp", t)
 			} else {
-				d := net.Dialer{Timeout: 3 * time.Second}
+				timeout := p.Timeout
+				if timeout == 0 {
+					timeout = 5 * time.Second
+				}
+				d := net.Dialer{Timeout: timeout}
 				conn, err = d.DialContext(ctx, "tcp", t)
 			}
 
@@ -87,9 +110,20 @@ func (p *TCPProbe) Check(ctx context.Context, target string) (Result, error) {
 		var err error
 
 		if p.DialContext != nil {
-			conn, err = p.DialContext(ctx, "tcp", t)
+			// Create timeout context for tunnel dial
+			timeout := p.Timeout
+			if timeout == 0 {
+				timeout = 5 * time.Second
+			}
+			dialCtx, cancel := context.WithTimeout(ctx, timeout)
+			conn, err = p.DialContext(dialCtx, "tcp", t)
+			cancel()
 		} else {
-			d := net.Dialer{Timeout: 3 * time.Second}
+			timeout := p.Timeout
+			if timeout == 0 {
+				timeout = 5 * time.Second
+			}
+			d := net.Dialer{Timeout: timeout}
 			conn, err = d.DialContext(ctx, "tcp", t)
 		}
 		if err == nil {
@@ -111,4 +145,7 @@ func (p *TCPProbe) Check(ctx context.Context, target string) (Result, error) {
 		Message:   fmt.Sprintf("all targets failed, last error: %v", lastErr),
 		Timestamp: startTotal,
 	}, nil
+}
+func (p *TCPProbe) SetTimeout(timeout time.Duration) {
+	p.Timeout = timeout
 }

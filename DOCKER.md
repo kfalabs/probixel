@@ -93,8 +93,10 @@ data:
         url: "https://internal-api.cluster.local/health"
         insecure_skip_verify: true
         monitor_endpoint:
+          timeout: "10s"
           failure:
             url: "https://webhook.site/failure"
+            timeout: "5s"
 ```
 
 ## Network Modes

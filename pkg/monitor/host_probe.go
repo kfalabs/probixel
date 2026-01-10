@@ -28,3 +28,7 @@ func (p *HostProbe) Check(ctx context.Context, target string) (Result, error) {
 		Timestamp: time.Now(),
 	}, nil
 }
+
+func (p *HostProbe) SetTimeout(timeout time.Duration) {
+	// Not used for Host probe
+}
