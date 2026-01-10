@@ -168,7 +168,7 @@ The `tunnels` root block allows you to define underlying network transport layer
   - When services fail, the tunnel checks both handshake and success timestamps before restarting
   - Restart occurs only if BOTH handshake is stale (> 5 min) AND no success within the success window
 
-#### Shared Tunnel Registry
+#### Reusable Tunnel Configuration
 Once defined in the root `tunnels` block, a tunnel can be referenced by any service using the `tunnel: <name>` property. This decouples the network setup from the specific health checks you want to perform.
 
 #### Configuration
@@ -188,6 +188,7 @@ tunnels:
     ssh:
       user: "tunnel-user"
       private_key: "..."
+```
 
 #### Integrated Tunnel Transport
 Any probe type (`http`, `tcp`, `dns`, `udp`, `tls`) can route its traffic through a defined tunnel. By setting `tunnel: <name>` at the service level, the probe automatically uses the tunnel.
@@ -197,7 +198,6 @@ This allows you to perform health checks against internal targets without comple
 - **TCP-over-SSH**: Perform database health checks behind an SSH bastion.
 - **Integrated Dialing**: Traffic is routed directly in-process; no system-level routing changes are required.
 - **Stabilization Awareness**: Probes are "tunnel-aware"; if an underlying tunnel is still stabilizing (handshaking), the probe will report `WAITING` instead of `DOWN`, inhibiting premature failure reports.
-```
 
 ### Services / Probe Types
 
@@ -584,6 +584,7 @@ monitor_endpoint:
     method: "PUT"
     headers:
       Content-Type: "application/json"
+```
 
 ### Timeout Hierarchy
 
@@ -594,7 +595,6 @@ Monitor endpoint timeouts follow a hierarchy of precedence:
 4. **Default**: `5s` if no timeout is specified anywhere.
 
 This allows you to set a conservative global timeout while allowing specific slow endpoints (e.g., a webhook that triggers a heavy process) to have a longer timeout.
-```
 
 ## Development
 

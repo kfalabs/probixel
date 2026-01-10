@@ -66,6 +66,9 @@ func TestSSHTunnel_Integration(t *testing.T) {
 			}
 			return nil, fmt.Errorf("auth failed")
 		},
+		PublicKeyCallback: func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+			return nil, nil // Accept any for mock
+		},
 	}
 	// Need a host key
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
@@ -157,10 +160,6 @@ func TestSSHTunnel_Integration(t *testing.T) {
 			Type:  "RSA PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(key),
 		})
-
-		serverConfig.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
-			return nil, nil // Accept any for mock
-		}
 
 		tun2 := NewSSHTunnel("pk-tun", host, &config.SSHConfig{
 			User:       "pk-user",

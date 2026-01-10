@@ -31,6 +31,7 @@ type Watchdog struct {
 	pusher         *notifier.Pusher
 	reloadChan     chan struct{}
 
+	mu     sync.Mutex
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
@@ -49,7 +50,9 @@ func NewWatchdog(configPath string, cfg *config.Config) *Watchdog {
 }
 
 func (w *Watchdog) Start(ctx context.Context) {
+	w.mu.Lock()
 	ctx, w.cancel = context.WithCancel(ctx)
+	w.mu.Unlock()
 	w.pusher.SetRateLimit(w.shared.Get().Global.Notifier.RateLimit)
 
 	// Start config watcher
@@ -207,8 +210,11 @@ func (w *Watchdog) watchConfigFile(ctx context.Context, watcher *fsnotify.Watche
 }
 
 func (w *Watchdog) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	w.mu.Lock()
+	cancel := w.cancel
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 	w.wg.Wait()
 	w.tunnelRegistry.StopAll()
