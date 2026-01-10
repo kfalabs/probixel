@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"probixel/pkg/config"
+	"probixel/pkg/tunnels"
 )
 
 func TestHTTPProbe_Check(t *testing.T) {
@@ -721,4 +722,34 @@ func TestHTTPProbe_EdgeCases_Extended(t *testing.T) {
 			t.Error("expected failure for non-matching regex")
 		}
 	})
+}
+func TestHTTPProbe_Stabilization(t *testing.T) {
+	// Mock Tunnel that is NOT stabilized
+	mt := &tunnels.MockTunnel{
+		IsStabilizedResult: false,
+	}
+
+	probe := &HTTPProbe{}
+	probe.SetTunnel(mt)
+
+	ctx := context.Background()
+	res, err := probe.Check(ctx, "http://localhost:8080")
+
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Pending {
+		t.Error("Expected Pending: true when tunnel is not stabilized")
+	}
+	if res.Success {
+		t.Error("Expected Success: false when tunnel is not stabilized")
+	}
+}
+
+func TestHTTPProbe_SetTimeout(t *testing.T) {
+	p := &HTTPProbe{}
+	p.SetTimeout(10 * time.Second)
+	if p.Timeout != 10*time.Second {
+		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
+	}
 }

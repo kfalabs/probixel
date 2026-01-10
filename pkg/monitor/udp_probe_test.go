@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"probixel/pkg/tunnels"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Mock conn for UDP write
@@ -190,4 +192,25 @@ func TestUDPProbe_Check_EmptyTargetsFiller(t *testing.T) {
 
 	p.SetTargetMode(TargetModeAny)
 	_, _ = p.Check(context.Background(), " , target:53 ")
+}
+func TestUDPProbe_Stabilization(t *testing.T) {
+	mt := &tunnels.MockTunnel{IsStabilizedResult: false}
+	probe := &UDPProbe{}
+	probe.SetTunnel(mt)
+
+	res, err := probe.Check(context.Background(), "localhost:8080")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Pending {
+		t.Error("Expected Pending: true")
+	}
+}
+
+func TestUDPProbe_SetTimeout(t *testing.T) {
+	p := &UDPProbe{}
+	p.SetTimeout(10 * time.Second)
+	if p.Timeout != 10*time.Second {
+		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
+	}
 }

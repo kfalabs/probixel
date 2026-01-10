@@ -60,7 +60,7 @@ lint: ## Run linter
 	golangci-lint run ./...
 
 build-native: ## Build native binary
-	go build -o probixel ./cmd/agent
+	go build -o probixel ./cmd
 
 run-native: ## Run native binary
 	./probixel -config config.yaml

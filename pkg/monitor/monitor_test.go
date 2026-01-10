@@ -76,6 +76,8 @@ func TestGetProbe(t *testing.T) {
 		{"Host probe", MonitorTypeHost, MonitorTypeHost, false},
 		{"Docker probe", MonitorTypeDocker, MonitorTypeDocker, false},
 		{"Wireguard probe", MonitorTypeWireguard, MonitorTypeWireguard, false},
+		{"TLS probe", MonitorTypeTLS, MonitorTypeTLS, false},
+		{"SSH probe", MonitorTypeSSH, MonitorTypeSSH, false},
 		{"Invalid probe", "invalid", "", true},
 		{"Empty probe", "", "", true},
 	}

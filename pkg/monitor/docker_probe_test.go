@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"probixel/pkg/config"
+	"probixel/pkg/tunnels"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDockerProbe_Check_Proxy(t *testing.T) {
@@ -511,4 +513,44 @@ func TestDockerProbe_Check_EmptyTargets(t *testing.T) {
 		// Mixed empty
 		_, _ = probe.Check(ctx, "mysql, , ")
 	})
+}
+
+func TestDockerProbe_DialContext(t *testing.T) {
+	dialCalled := false
+	probe := &DockerProbe{
+		Sockets: map[string]config.DockerSocketConfig{
+			"proxy": {Host: "localhost", Port: 80},
+		},
+		SocketName: "proxy",
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialCalled = true
+			return nil, fmt.Errorf("mock dial error")
+		},
+	}
+
+	_, _ = probe.Check(context.Background(), "test")
+	if !dialCalled {
+		t.Error("expected DialContext to be called")
+	}
+}
+func TestDockerProbe_Stabilization(t *testing.T) {
+	mt := &tunnels.MockTunnel{IsStabilizedResult: false}
+	probe := &DockerProbe{}
+	probe.SetTunnel(mt)
+
+	res, err := probe.Check(context.Background(), "test-container")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Pending {
+		t.Error("Expected Pending: true")
+	}
+}
+
+func TestDockerProbe_SetTimeout(t *testing.T) {
+	p := &DockerProbe{}
+	p.SetTimeout(10 * time.Second)
+	if p.Timeout != 10*time.Second {
+		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
+	}
 }

@@ -3,10 +3,13 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"probixel/pkg/tunnels"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Helper to mock exec.CommandContext
@@ -217,13 +220,13 @@ func TestGetPingArgs(t *testing.T) {
 		wantName string
 		wantArgs []string
 	}{
-		{"windows", "1.2.3.4", "ping", []string{"-n", "1", "1.2.3.4"}},
-		{"linux", "1.2.3.4", "ping", []string{"-c", "1", "1.2.3.4"}},
-		{"darwin", "1.2.3.4", "ping", []string{"-c", "1", "1.2.3.4"}},
+		{"windows", "1.2.3.4", "ping", []string{"-n", "1", "-w", "5000", "1.2.3.4"}},
+		{"linux", "1.2.3.4", "ping", []string{"-c", "1", "-W", "5", "1.2.3.4"}},
+		{"darwin", "1.2.3.4", "ping", []string{"-c", "1", "-W", "5", "1.2.3.4"}},
 	}
 
 	for _, tt := range tests {
-		name, args := getPingArgs(tt.goos, tt.target)
+		name, args := getPingArgs(tt.goos, tt.target, 0)
 		if name != tt.wantName {
 			t.Errorf("getPingArgs(%s) name = %v, want %v", tt.goos, name, tt.wantName)
 		}
@@ -235,5 +238,96 @@ func TestGetPingArgs(t *testing.T) {
 				t.Errorf("getPingArgs(%s) args[%d] = %v, want %v", tt.goos, i, args[i], tt.wantArgs[i])
 			}
 		}
+	}
+}
+func TestPingProbe_Stabilization(t *testing.T) {
+	mt := &tunnels.MockTunnel{IsStabilizedResult: false}
+	probe := &PingProbe{}
+	probe.SetTunnel(mt)
+
+	res, err := probe.Check(context.Background(), "localhost.test")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Pending {
+		t.Error("Expected Pending: true")
+	}
+}
+
+type mockPingConn struct {
+	net.Conn
+	readData []byte
+	readPos  int
+}
+
+func (m *mockPingConn) Write(b []byte) (int, error) {
+	// Simple mock: assume it's an echo request and prepare an echo reply
+	m.readData = []byte{
+		0x00, 0x00, // Echo Reply
+		0x00, 0x00, // Checksum (ignored)
+		0x00, 0x01, // ID (ignored)
+		0x00, 0x01, // Seq (ignored)
+		'P', 'R', 'O', 'B', 'I', 'X', 'E', 'L', // Data
+	}
+	return len(b), nil
+}
+
+func (m *mockPingConn) Read(b []byte) (int, error) {
+	if m.readPos >= len(m.readData) {
+		return 0, fmt.Errorf("EOF")
+	}
+	n := copy(b, m.readData[m.readPos:])
+	m.readPos += n
+	return n, nil
+}
+
+func (m *mockPingConn) Close() error                       { return nil }
+func (m *mockPingConn) SetDeadline(t time.Time) error      { return nil }
+func (m *mockPingConn) SetReadDeadline(t time.Time) error  { return nil }
+func (m *mockPingConn) SetWriteDeadline(t time.Time) error { return nil }
+
+func TestPingProbe_Builtin(t *testing.T) {
+	probe := &PingProbe{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return &mockPingConn{}, nil
+		},
+	}
+	ctx := context.Background()
+	res, err := probe.Check(ctx, "8.8.8.8")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success, got failure: %s", res.Message)
+	}
+}
+func TestPingProbe_Timeout(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	execCommand = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		// Verify -W flag in ping command
+		cmdStr := strings.Join(arg, " ")
+		if !strings.Contains(cmdStr, "-W 5") {
+			return exec.Command("false")
+		}
+		return exec.Command("echo", "time=10.5 ms")
+	}
+
+	p := &PingProbe{Timeout: 5 * time.Second}
+	res, err := p.Check(context.Background(), "127.0.0.1")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success, got failure: %s", res.Message)
+	}
+}
+
+func TestPingProbe_SetTimeout(t *testing.T) {
+	p := &PingProbe{}
+	p.SetTimeout(10 * time.Second)
+	if p.Timeout != 10*time.Second {
+		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
 	}
 }

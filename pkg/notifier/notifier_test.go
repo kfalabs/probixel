@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+func ptr(s string) *string {
+	return &s
+}
+
 func TestPusher_Push(t *testing.T) {
 	// Create a test server to mock the alert endpoint
 	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -318,6 +322,200 @@ func TestPushOptionalFailure(t *testing.T) {
 		err := pusher.Push(result, endpointCfg, globalCfg)
 		if err != nil {
 			t.Errorf("Expected nil error when failure URL is empty, got: %v", err)
+		}
+	})
+}
+
+func TestPusher_RateLimit(t *testing.T) {
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer testServer.Close()
+
+	pusher := NewPusher()
+	pusher.SetRateLimit(ptr("100ms"))
+
+	alertCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: testServer.URL},
+	}
+	res := monitor.Result{Success: true}
+
+	start := time.Now()
+	// Push 3 times
+	for i := 0; i < 3; i++ {
+		_ = pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	}
+	duration := time.Since(start)
+
+	// 3 pushes with 100ms interval should take at least 200ms
+	// Call 1: immediate
+	// Call 2: sleeps ~100ms
+	// Call 3: sleeps ~100ms
+	if duration < 200*time.Millisecond {
+		t.Errorf("Expected duration to be at least 200ms, got %v", duration)
+	}
+}
+
+func TestPusher_SetRateLimit_Invalid(t *testing.T) {
+	pusher := NewPusher()
+	pusher.SetRateLimit(ptr("100ms"))
+
+	// Set to invalid duration should not change existing rate limit
+	pusher.SetRateLimit(ptr("invalid"))
+
+	p := pusher
+	p.mu.Lock()
+	limit := p.rateLimit
+	p.mu.Unlock()
+
+	if limit != 100*time.Millisecond {
+		t.Errorf("Expected rate limit to remain 100ms, got %v", limit)
+	}
+}
+
+func TestPusher_DefaultRateLimit(t *testing.T) {
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer testServer.Close()
+
+	// New pusher should have 100ms default
+	pusher := NewPusher()
+
+	alertCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: testServer.URL},
+	}
+	res := monitor.Result{Success: true}
+
+	start := time.Now()
+	// Push 2 times
+	for i := 0; i < 2; i++ {
+		_ = pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	}
+	duration := time.Since(start)
+
+	// 2 pushes with 100ms interval should take at least 100ms
+	if duration < 100*time.Millisecond {
+		t.Errorf("Expected duration to be at least 100ms (default), got %v", duration)
+	}
+}
+
+func TestPusher_SetRateLimit_Empty(t *testing.T) {
+	pusher := NewPusher()
+	pusher.SetRateLimit(ptr("200ms"))
+
+	// Empty string should not change the rate limit
+	pusher.SetRateLimit(ptr(""))
+
+	p := pusher
+	p.mu.Lock()
+	limit := p.rateLimit
+	p.mu.Unlock()
+
+	if limit != 200*time.Millisecond {
+		t.Errorf("Expected rate limit to remain 200ms, got %v", limit)
+	}
+}
+
+func TestPusher_SetRateLimit_Zero(t *testing.T) {
+	pusher := NewPusher()
+
+	// "0" should disable the default 100ms rate limit
+	pusher.SetRateLimit(ptr("0"))
+
+	p := pusher
+	p.mu.Lock()
+	limit := p.rateLimit
+	p.mu.Unlock()
+
+	if limit != 0 {
+		t.Errorf("Expected rate limit to be 0, got %v", limit)
+	}
+}
+
+func TestPusher_Push_SetRateLimit_Nil(t *testing.T) {
+	pusher := NewPusher() // Default 100ms
+
+	// SetRateLimit(nil) should not change the default
+	pusher.SetRateLimit(nil)
+
+	p := pusher
+	p.mu.Lock()
+	limit := p.rateLimit
+	p.mu.Unlock()
+
+	if limit != 100*time.Millisecond {
+		t.Errorf("Expected rate limit to remain 100ms, got %v", limit)
+	}
+}
+
+func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
+	// Create a slow test server
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer testServer.Close()
+
+	pusher := NewPusher()
+	res := monitor.Result{Success: true}
+
+	t.Run("Endpoint timeout (shortest)", func(t *testing.T) {
+		alertCfg := config.MonitorEndpointConfig{
+			Success: config.EndpointConfig{
+				URL:     testServer.URL,
+				Timeout: "50ms",
+			},
+			Timeout: "500ms",
+		}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s"}
+
+		err := pusher.Push(res, alertCfg, globalCfg)
+		if err == nil {
+			t.Error("Expected timeout error (50ms), got nil")
+		} else if !strings.Contains(err.Error(), "Client.Timeout exceeded") && !strings.Contains(err.Error(), "context deadline exceeded") {
+			t.Errorf("Expected timeout error, got: %v", err)
+		}
+	})
+
+	t.Run("Service-shared timeout", func(t *testing.T) {
+		alertCfg := config.MonitorEndpointConfig{
+			Success: config.EndpointConfig{URL: testServer.URL},
+			Timeout: "50ms",
+		}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s"}
+
+		err := pusher.Push(res, alertCfg, globalCfg)
+		if err == nil {
+			t.Error("Expected timeout error (50ms service-shared), got nil")
+		} else if !strings.Contains(err.Error(), "Client.Timeout exceeded") && !strings.Contains(err.Error(), "context deadline exceeded") {
+			t.Errorf("Expected timeout error, got: %v", err)
+		}
+	})
+
+	t.Run("Global timeout", func(t *testing.T) {
+		alertCfg := config.MonitorEndpointConfig{
+			Success: config.EndpointConfig{URL: testServer.URL},
+		}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "50ms"}
+
+		err := pusher.Push(res, alertCfg, globalCfg)
+		if err == nil {
+			t.Error("Expected timeout error (50ms global), got nil")
+		} else if !strings.Contains(err.Error(), "Client.Timeout exceeded") && !strings.Contains(err.Error(), "context deadline exceeded") {
+			t.Errorf("Expected timeout error, got: %v", err)
+		}
+	})
+
+	t.Run("Default timeout (succeeds with 5s)", func(t *testing.T) {
+		alertCfg := config.MonitorEndpointConfig{
+			Success: config.EndpointConfig{URL: testServer.URL},
+		}
+		globalCfg := config.GlobalMonitorEndpointConfig{}
+
+		err := pusher.Push(res, alertCfg, globalCfg)
+		if err != nil {
+			t.Errorf("Expected success with default 5s timeout, got: %v", err)
 		}
 	})
 }

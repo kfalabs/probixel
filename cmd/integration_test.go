@@ -9,11 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
-
-	"probixel/pkg/config"
 )
 
 func TestIntegration_AgentLoop(t *testing.T) {
@@ -99,11 +96,14 @@ func TestIntegration_AgentLoop(t *testing.T) {
 global:
   headers:
     Env: IntegrationTest
+  notifier:
+    rate_limit: "0"
 
 services:
   - name: "Reload Test"
     type: "http"
     interval: "1s"
+    timeout: "500ms"
     url: "%[1]s/target"
     http:
       method: "GET"
@@ -114,6 +114,7 @@ services:
   - name: "Integration Test Service"
     type: "http"
     interval: "1s"
+    timeout: "500ms"
     url: "%[1]s/target"
     http:
       method: "GET"
@@ -126,6 +127,7 @@ services:
   - name: "Integration Ping Service"
     type: "ping"
     interval: "1s"
+    timeout: "500ms"
     targets: ["127.0.0.1"]
     target_mode: "any"
     ping: {}
@@ -136,6 +138,7 @@ services:
   - name: "Integration UDP Service"
     type: "udp"
     interval: "1s"
+    timeout: "500ms"
     targets: ["127.0.0.1:%d"]
     target_mode: "any"
     udp: {}
@@ -149,18 +152,18 @@ services:
 	}
 	_ = configFile.Close()
 
-	// Run the Agent (Disable delay for fast tests)
+	// Run the Agent with -delay 0 to skip the starting window
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, agentBin, "-config", configFile.Name(), "-delay", "0") //nolint:gosec // G204: Running built test binary with config file
-	// cmd.Stderr = os.Stderr
+	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start agent: %v", err)
 	}
 
-	// Wait for Alerts (Fast tests with -delay 0)
+	// Wait for Alerts (fast with -delay 0)
 	timeout := time.After(5 * time.Second)
 	gotHTTP := false
 	gotPing := false
@@ -215,7 +218,7 @@ func TestIntegration_HealthCheck(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	agentCmd := exec.CommandContext(ctx, agentBin, "-config", configPath, "-pidfile", pidFile)
+	agentCmd := exec.CommandContext(ctx, agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0")
 	if err := agentCmd.Start(); err != nil {
 		t.Fatalf("Failed to start agent: %v", err)
 	}
@@ -241,240 +244,109 @@ func TestIntegration_HealthCheck(t *testing.T) {
 	}
 }
 
-func TestConfigReload_Integration(t *testing.T) {
-	// Create channels to track alerts
-	alertMu := sync.Mutex{}
-	receivedAlerts := []string{}
+func TestIntegration_InvalidConfig(t *testing.T) {
+	// Build the agent binary
+	agentBin := filepath.Join(os.TempDir(), "probixel-invalid-cfg-test")
+	buildCmd := exec.Command("go", "build", "-o", agentBin, ".")
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build agent: %v\n%s", err, out)
+	}
+	defer func() { _ = os.Remove(agentBin) }()
 
-	// Create mock alert server
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		alertMu.Lock()
-		receivedAlerts = append(receivedAlerts, path)
-		alertMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	// Create a UDP listener for testing
-	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	// Create invalid config file
+	configPath := filepath.Join(os.TempDir(), "invalid_config.yaml")
+	err := os.WriteFile(configPath, []byte("invalid: yaml: ["), 0644)
 	if err != nil {
 		t.Fatal(err)
 	}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		t.Fatal(err)
+	defer func() { _ = os.Remove(configPath) }()
+
+	// Run agent with invalid config - should fail
+	pidFile := filepath.Join(os.TempDir(), "probixel-invalid.pid")
+	defer func() { _ = os.Remove(pidFile) }()
+
+	cmd := exec.Command(agentBin, "-config", configPath, "-pidfile", pidFile)
+	err = cmd.Run()
+	if err == nil {
+		t.Error("Expected agent to fail with invalid config, but it succeeded")
 	}
-	defer func() { _ = udpConn.Close() }()
-	udpPort := udpConn.LocalAddr().(*net.UDPAddr).Port
-
-	// Create temporary config file
-	configFile, err := os.CreateTemp("", "reload_test_*.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Remove(configFile.Name()) }()
-
-	// Initial config with 300ms interval
-	initialConfig := fmt.Sprintf(`
-services:
-  - name: "Test UDP Service"
-    type: "udp"
-    interval: "300ms"
-    targets: ["127.0.0.1:%d"]
-    target_mode: "any"
-    udp: {}
-    monitor_endpoint:
-      success:
-        url: "%s/alert/initial?duration={%%duration%%}"
-`, udpPort, ts.URL)
-
-	if _, err := configFile.Write([]byte(initialConfig)); err != nil {
-		t.Fatal(err)
-	}
-	if err := configFile.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Load initial config
-	cfg, err := config.LoadConfig(configFile.Name())
-	if err != nil {
-		t.Fatalf("Failed to load initial config: %v", err)
-	}
-
-	// Create shared config
-	shared := &sharedConfig{config: cfg}
-
-	// Verify initial config
-	if len(cfg.Services) != 1 {
-		t.Fatalf("Expected 1 service, got %d", len(cfg.Services))
-	}
-	if cfg.Services[0].Name != "Test UDP Service" {
-		t.Errorf("Expected service name 'Test UDP Service', got %s", cfg.Services[0].Name)
-	}
-
-	// Wait a bit
-	time.Sleep(500 * time.Millisecond)
-
-	// Update config with new alert URL
-	updatedConfig := fmt.Sprintf(`
-services:
-  - name: "Test UDP Service"
-    type: "udp"
-    interval: "300ms"
-    targets: ["127.0.0.1:%d"]
-    target_mode: "any"
-    udp: {}
-    monitor_endpoint:
-      success:
-        url: "%s/alert/updated?duration={%%duration%%}"
-`, udpPort, ts.URL)
-
-	// Write updated config
-	if err := os.WriteFile(configFile.Name(), []byte(updatedConfig), 0644); err != nil { //nolint:gosec // G306: Test file permissions
-		t.Fatal(err)
-	}
-
-	// Simulate config reload (what the watcher would do)
-	time.Sleep(100 * time.Millisecond)
-	newCfg, err := config.LoadConfig(configFile.Name())
-	if err != nil {
-		t.Fatalf("Failed to reload config: %v", err)
-	}
-
-	// Update shared config
-	shared.set(newCfg)
-
-	// Verify config was updated
-	reloadedCfg := shared.get()
-	if len(reloadedCfg.Services) != 1 {
-		t.Fatalf("Expected 1 service after reload, got %d", len(reloadedCfg.Services))
-	}
-
-	// Verify the URL changed
-	if reloadedCfg.Services[0].MonitorEndpoint.Success.URL != fmt.Sprintf("%s/alert/updated?duration={%%duration%%}", ts.URL) {
-		t.Errorf("Config was not properly reloaded. Expected updated URL, got: %s",
-			reloadedCfg.Services[0].MonitorEndpoint.Success.URL)
-	}
-
-	t.Log("Config reload test passed - configuration was successfully updated")
 }
 
-func TestConfigReload_InvalidConfig(t *testing.T) {
-	// Create temporary config file
-	configFile, err := os.CreateTemp("", "reload_invalid_test_*.yaml")
-	if err != nil {
-		t.Fatal(err)
+func TestIntegration_MissingConfigFile(t *testing.T) {
+	// Build the agent binary
+	agentBin := filepath.Join(os.TempDir(), "probixel-missing-cfg-test")
+	buildCmd := exec.Command("go", "build", "-o", agentBin, ".")
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
-	defer func() { _ = os.Remove(configFile.Name()) }()
+	defer func() { _ = os.Remove(agentBin) }()
 
-	// Valid initial config
-	validConfig := fmt.Sprintf(`
+	// Run agent with missing config - should fail
+	cmd := exec.Command(agentBin, "-config", "/nonexistent/path/config.yaml")
+	err := cmd.Run()
+	if err == nil {
+		t.Error("Expected agent to fail with missing config file, but it succeeded")
+	}
+}
+
+func TestIntegration_GracefulShutdown(t *testing.T) {
+	// Build the agent binary
+	agentBin := filepath.Join(os.TempDir(), "probixel-shutdown-test")
+	buildCmd := exec.Command("go", "build", "-o", agentBin, ".")
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to build agent: %v\n%s", err, out)
+	}
+	defer func() { _ = os.Remove(agentBin) }()
+
+	// Create a minimal config
+	configPath := filepath.Join(os.TempDir(), "shutdown_config.yaml")
+	err := os.WriteFile(configPath, []byte(`
 services:
-  - name: "Reload Test Invalid"
+  - name: "Shutdown Test"
     type: "host"
     interval: "1s"
-    targets: ["localhost"]
-    target_mode: "any"
-    host: {}
     monitor_endpoint:
       success:
-        url: "http://example.test/success?duration={%%duration%%}"
-`)
-
-	if _, err := configFile.Write([]byte(validConfig)); err != nil {
-		t.Fatal(err)
-	}
-	if err := configFile.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Load initial config to verify it's valid
-	cfg, err := config.LoadConfig(configFile.Name())
+        url: "http://localhost/ok"
+`), 0644)
 	if err != nil {
-		t.Fatalf("Initial config should be valid: %v", err)
-	}
-	if len(cfg.Services) != 1 {
-		t.Fatalf("Expected 1 service, got %d", len(cfg.Services))
-	}
-
-	// Create shared config
-	shared := &sharedConfig{config: cfg}
-	oldCfg := shared.get()
-
-	// Write invalid config
-	invalidConfig := `
-this is not valid yaml: [[[
-services:
-  - invalid
-`
-	if err := os.WriteFile(configFile.Name(), []byte(invalidConfig), 0644); err != nil { //nolint:gosec // G306: Test file permissions
 		t.Fatal(err)
 	}
+	defer func() { _ = os.Remove(configPath) }()
 
-	// Try to reload - should fail
-	_, err = config.LoadConfig(configFile.Name())
-	if err == nil {
-		t.Error("Expected error when loading invalid config")
+	pidFile := filepath.Join(os.TempDir(), "probixel-shutdown.pid")
+	defer func() { _ = os.Remove(pidFile) }()
+
+	cmd := exec.Command(agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Failed to start agent: %v", err)
 	}
 
-	// Verify shared config was NOT updated (simulating what watchConfigFile does)
-	currentCfg := shared.get()
-	if currentCfg != oldCfg {
-		t.Error("Shared config should not have been updated with invalid config")
+	// Give it a moment to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Send SIGTERM for graceful shutdown
+	if cmd.Process != nil {
+		_ = cmd.Process.Signal(os.Interrupt)
 	}
 
-	if len(currentCfg.Services) != 1 {
-		t.Errorf("Expected old config to remain with 1 service, got %d", len(currentCfg.Services))
+	// Wait for it to exit
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		// Graceful shutdown should exit cleanly or with signal
+		if err != nil {
+			// On some systems, being killed with SIGINT may show as an error
+			t.Logf("Agent exited with: %v (this is expected for signal termination)", err)
+		}
+	case <-time.After(5 * time.Second):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		t.Fatal("Agent did not exit within 5 seconds after SIGTERM")
 	}
-
-	t.Log("Invalid config test passed - old configuration was preserved")
-}
-
-func TestSharedConfig_ThreadSafety(t *testing.T) {
-	// Create initial config
-	cfg := &config.Config{
-		Services: []config.Service{
-			{Name: "Service1"},
-		},
-	}
-
-	shared := &sharedConfig{config: cfg}
-
-	// Test concurrent reads and writes
-	var wg sync.WaitGroup
-	iterations := 100
-
-	// Start multiple readers
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				c := shared.get()
-				if len(c.Services) == 0 {
-					t.Error("Config should always have at least one service")
-				}
-			}
-		}()
-	}
-
-	// Start multiple writers
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				newCfg := &config.Config{
-					Services: []config.Service{
-						{Name: fmt.Sprintf("Service%d", id)},
-					},
-				}
-				shared.set(newCfg)
-			}
-		}(i)
-	}
-
-	wg.Wait()
-	t.Log("Thread safety test passed - no race conditions detected")
 }

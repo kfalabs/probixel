@@ -6,12 +6,20 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"probixel/pkg/tunnels"
 )
 
 type UDPProbe struct {
 	// DialContext allows mocking the dialer for tests
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	Timeout     time.Duration
 	targetMode  string
+	tunnel      tunnels.Tunnel
+}
+
+func (p *UDPProbe) SetTunnel(t tunnels.Tunnel) {
+	p.tunnel = t
 }
 
 func (p *UDPProbe) Name() string {
@@ -26,6 +34,17 @@ func (p *UDPProbe) Check(ctx context.Context, target string) (Result, error) {
 	// Support multiple targets (can be comma-separated or single)
 	targets := strings.Split(target, ",")
 	startTotal := time.Now()
+
+	// Strict stabilization adherence: always return Pending if tunnel not stabilized
+	if p.tunnel != nil && !p.tunnel.IsStabilized() {
+		return Result{
+			Success:   false,
+			Pending:   true,
+			Duration:  time.Since(startTotal),
+			Message:   fmt.Sprintf("waiting for tunnel %q to stabilize", p.tunnel.Name()),
+			Timestamp: startTotal,
+		}, nil
+	}
 
 	// For "all" mode, track successes
 	if p.targetMode == TargetModeAll {
@@ -46,7 +65,11 @@ func (p *UDPProbe) Check(ctx context.Context, target string) (Result, error) {
 			if p.DialContext != nil {
 				conn, err = p.DialContext(ctx, "udp", t)
 			} else {
-				d := net.Dialer{Timeout: 3 * time.Second}
+				timeout := p.Timeout
+				if timeout == 0 {
+					timeout = 5 * time.Second
+				}
+				d := net.Dialer{Timeout: timeout}
 				conn, err = d.DialContext(ctx, "udp", t)
 			}
 
@@ -101,7 +124,11 @@ func (p *UDPProbe) Check(ctx context.Context, target string) (Result, error) {
 		if p.DialContext != nil {
 			conn, err = p.DialContext(ctx, "udp", t)
 		} else {
-			d := net.Dialer{Timeout: 3 * time.Second}
+			timeout := p.Timeout
+			if timeout == 0 {
+				timeout = 5 * time.Second
+			}
+			d := net.Dialer{Timeout: timeout}
 			conn, err = d.DialContext(ctx, "udp", t)
 		}
 
@@ -136,4 +163,7 @@ func (p *UDPProbe) Check(ctx context.Context, target string) (Result, error) {
 		Message:   fmt.Sprintf("all udp targets failed, last error: %v", lastErr),
 		Timestamp: startTotal,
 	}, nil
+}
+func (p *UDPProbe) SetTimeout(timeout time.Duration) {
+	p.Timeout = timeout
 }

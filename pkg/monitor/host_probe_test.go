@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestHostProbe_Check(t *testing.T) {
@@ -25,4 +26,10 @@ func TestHostProbe_SetTargetMode(t *testing.T) {
 	probe := &HostProbe{}
 	probe.SetTargetMode(TargetModeAll)
 	probe.SetTargetMode(TargetModeAny)
+}
+
+func TestHostProbe_SetTimeout(t *testing.T) {
+	p := &HostProbe{}
+	p.SetTimeout(10 * time.Second)
+	// HostProbe's SetTimeout is a no-op, but we test it for coverage
 }

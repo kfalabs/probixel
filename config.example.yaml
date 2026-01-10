@@ -6,8 +6,11 @@
 global:
   default_interval: "5m"
   monitor_endpoint:
+    timeout: "10s" # Optional global default timeout for alert notifications, defaults to 5s.
     headers:
       Authorization: "Bearer your-common-token"
+  notifier:
+    rate_limit: "100ms" # Global rate limit between notification pushes. Use "0" to disable.
 
 docker-sockets: # Optional, only used for docker service monitoring.
   local:
@@ -19,30 +22,51 @@ docker-sockets: # Optional, only used for docker service monitoring.
     headers: # Optional headers for the proxy
       Authorization: "Basic your-base64-token"
 
+tunnels:
+  office-vpn:
+    type: "wireguard"
+    wireguard:
+      endpoint: "vpn.example.local:51820"
+      public_key: "..."
+      private_key: "..."
+      addresses: "10.64.222.21/32"
+      restart_threshold: 1   # Optional: failures before triggering restart (default: 1)
+  secure-ssh:
+    type: "ssh"
+    ssh:
+      user: "tunnel-user"
+      private_key: "..."
+      port: 2222
+    target: "bastion.example.local"
+
 services:
   - name: "Main Website"
     type: "http"
     url: "https://probixel.example"
     interval: "1m"
+    timeout: "5s"
     http:
       method: "GET"
       accepted_status_codes: "200-299"
     monitor_endpoint:
+      timeout: "10s" # Optional service-level timeout for alert notifications.
       success:
         url: "https://uptime.probixel.test/api/push/success?duration={%duration%}"
+        timeout: "15s" # Optional endpoint-specific timeout.
 
   - name: "Database Cluster"
     type: "tcp"
     targets: ["db1.example.com:5432", "db2.example.com:5432"]
     target_mode: "any"
+    timeout: "5s"
     monitor_endpoint:
       success:
         url: "https://uptime.probixel.test/api/push/db?status=up"
 
   - name: "Public DNS"
     type: "dns"
-    targets: ["8.8.8.8:53", "1.1.1.1:53"]
-    target_mode: "any"
+    interval: "1m"
+    timeout: "5s"
     dns:
       domain: "google.com"
     monitor_endpoint:
@@ -53,14 +77,13 @@ services:
     type: "ping"
     targets: ["10.0.0.1", "10.0.0.2"]
     target_mode: "all"
+    timeout: "5s"
     monitor_endpoint:
       success:
         url: "https://uptime.probixel.test/api/push/ping?status=up"
 
   - name: "Local Health Check"
     type: "host"
-    targets: ["localhost"]
-    target_mode: "any"
     monitor_endpoint:
       success:
         url: "https://uptime.probixel.test/api/push/host?status=up"
@@ -68,6 +91,7 @@ services:
   - name: "Web Certificate"
     type: "tls"
     url: "tls://probixel.test:443"
+    timeout: "5s"
     tls:
       certificate_expiry: "14d"
       insecure_skip_verify: false
@@ -78,6 +102,7 @@ services:
   - name: "Docker Service"
     type: "docker"
     targets: ["web-container"]
+    timeout: "5s"
     docker:
       socket: "local"
       healthy: true
@@ -85,19 +110,86 @@ services:
       success:
         url: "https://uptime.probixel.test/api/push/docker?status=up"
 
-  - name: "VPN Tunnel"
+  - name: "VPN Tunnel Heartbeat"
     type: "wireguard"
-    targets: ["1.1.1.1:53"]
+    tunnel: "office-vpn" # Use the root-level tunnel defined above
+    timeout: "5s"
     wireguard:
-      endpoint: "vpn.example.local:51820"
-      public_key: "..."
-      private_key: "..."
-      preshared_key: "..."
-      addresses: "10.64.222.21/32"
-      allowed_ips: "0.0.0.0/0,::/0"
-      max_age: "10m"
-      success_on_heartbeat: true
-      persistent_keepalive: 25
+      max_age: "10m" # Monitor the handshake age of the 'office-vpn' tunnel
+      restart_threshold: 2
     monitor_endpoint:
       success:
         url: "https://uptime.probixel.test/api/push/vpn?status=up"
+
+  - name: "Personal VPN (Manual)"
+    type: "wireguard"
+    timeout: "5s"
+    wireguard:
+      endpoint: "vpn.manual.test:51820"
+      public_key: "..."
+      private_key: "..."
+      addresses: "10.64.222.25/32"
+      max_age: "10m"
+      restart_threshold: 3 # Wait for 3 failures before restarting this manual tunnel
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/manual-vpn?status=up"
+
+  - name: "Remote Server SSH (via Tunnel)"
+    type: "ssh"
+    tunnel: "secure-ssh" # Use the root-level tunnel for both transport and target
+    timeout: "5s" # Optional, defaults to 5s
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/ssh?status=up"
+
+  - name: "SSH via Bastion (Jump Host)"
+    type: "ssh"
+    tunnel: "secure-ssh" # This tunnel acts as the bastion/jump host
+    target: "internal-host.local" # The final target to connect to
+    timeout: "5s"
+    ssh:
+      user: "final-user"
+      password: "final-password"
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/ssh-bastion?status=up"
+
+  - name: "HTTP via VPN Tunnel"
+    type: "http"
+    tunnel: "office-vpn" # Route all HTTP traffic through the VPN
+    url: "http://internal-portal.local"
+    timeout: "5s"
+    http:
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/vpn-http?status=up"
+
+  - name: "DNS via VPN Tunnel"
+    type: "dns"
+    tunnel: "office-vpn" # Perform DNS lookups through the VPN
+    targets: ["10.64.0.1"]
+    timeout: "5s"
+    dns:
+      domain: "internal.company.local"
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/vpn-dns?status=up"
+
+  - name: "Docker via Tunnel"
+    type: "docker"
+    tunnel: "office-vpn" # Access Docker API over the VPN
+    targets: ["internal-db"]
+    docker:
+      socket: "remote" # Must reference a proxied socket (Host/Port)
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/vpn-docker?status=up"
+
+  - name: "Remote Syslog (UDP)"
+    type: "udp"
+    targets: ["syslog.example.com:514"]
+    timeout: "5s"
+    monitor_endpoint:
+      success:
+        url: "https://uptime.probixel.test/api/push/udp?status=up"
