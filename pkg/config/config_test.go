@@ -1381,8 +1381,33 @@ func TestValidate_WireguardUnknownTunnel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown tunnel")
 	}
-	if !strings.Contains(err.Error(), "unknown tunnel") {
+	if !strings.Contains(err.Error(), "references unknown tunnel") {
 		t.Errorf("error %q does not mention unknown tunnel", err.Error())
+	}
+}
+
+func TestValidate_ServiceUnknownTunnel(t *testing.T) {
+	validMonitor := MonitorEndpointConfig{
+		Success: EndpointConfig{URL: "http://ok"},
+	}
+	config := Config{
+		Global: GlobalConfig{DefaultInterval: "1m"},
+		Services: []Service{
+			{
+				Name:            "HTTP Service",
+				Type:            "http",
+				URL:             "http://example.com",
+				Tunnel:          "missing-tunnel",
+				MonitorEndpoint: validMonitor,
+			},
+		},
+	}
+	err := config.Validate()
+	if err == nil {
+		t.Fatal("expected error for unknown tunnel")
+	}
+	if !strings.Contains(err.Error(), "references unknown tunnel \"missing-tunnel\"") {
+		t.Errorf("error %q does not mention unknown tunnel \"missing-tunnel\"", err.Error())
 	}
 }
 

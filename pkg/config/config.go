@@ -83,6 +83,13 @@ func (c *Config) Validate() error {
 		if svc.Name == "" {
 			return fmt.Errorf("service[%d] name is mandatory", i)
 		}
+
+		if svc.Tunnel != "" {
+			if _, ok := c.Tunnels[svc.Tunnel]; !ok {
+				return fmt.Errorf("service %q references unknown tunnel %q", svc.Name, svc.Tunnel)
+			}
+		}
+
 		if svc.Interval == "" && c.Global.DefaultInterval == "" {
 			return fmt.Errorf("service %q interval is mandatory (no global default_interval set)", svc.Name)
 		}
