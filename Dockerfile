@@ -35,8 +35,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Final stage - use alpine for minimal size.
 FROM alpine:3
 
-# Install ca-certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates
+# Install ca-certificates and timezone data
+RUN apk --no-cache add ca-certificates tzdata
+
+# Keep all timestamps on UTC by default
+ENV TZ=UTC
 
 # Create non-root user for security
 RUN addgroup -g 1000 probixel && \
