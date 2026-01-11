@@ -249,7 +249,7 @@ func (p *HTTPProbe) evaluateOperator(op, actual, target string) (bool, error) {
 }
 
 func (p *HTTPProbe) compare(actual, target string, isGreater bool) (bool, error) {
-	// 1. Try duration check (relative time)
+	// Try duration check (relative time)
 	// If target is "10m", assume actual is a timestamp and check time.Since(actual)
 	if dur, err := config.ParseDuration(target); err == nil && dur > 0 {
 		actualTime, err := p.parseTimestamp(actual)
@@ -263,7 +263,7 @@ func (p *HTTPProbe) compare(actual, target string, isGreater bool) (bool, error)
 		return age < dur, nil
 	}
 
-	// 2. Try numeric comparison
+	// Try numeric comparison
 	if actNum, err1 := strconv.ParseFloat(actual, 64); err1 == nil {
 		if tarNum, err2 := strconv.ParseFloat(target, 64); err2 == nil {
 			if isGreater {
@@ -273,7 +273,7 @@ func (p *HTTPProbe) compare(actual, target string, isGreater bool) (bool, error)
 		}
 	}
 
-	// 3. Try absolute time comparison
+	// Try absolute time comparison
 	if actTime, err1 := p.parseTimestamp(actual); err1 == nil {
 		if tarTime, err2 := p.parseTimestamp(target); err2 == nil {
 			if isGreater {
