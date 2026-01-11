@@ -3,23 +3,23 @@
 
 # Build the image
 build() {
-    docker build -t probixel:latest .
+    docker build -t probixel:latest -f "$(dirname "$0")/Dockerfile" .
 }
 
 # Run with docker-compose
 up() {
-    docker-compose up -d
+    docker-compose -f "$(dirname "$0")/docker-compose.example.yml" up -d
 }
 
 # Stop docker-compose
 down() {
-    docker-compose down
+    docker-compose -f "$(dirname "$0")/docker-compose.example.yml" down
 }
 
 # View logs
 logs() {
-    if docker-compose ps | grep -q probixel; then
-        docker-compose logs -f probixel
+    if docker-compose -f "$(dirname "$0")/docker-compose.example.yml" ps | grep -q probixel; then
+        docker-compose -f "$(dirname "$0")/docker-compose.example.yml" logs -f probixel
     else
         docker logs -f probixel
     fi
@@ -27,8 +27,8 @@ logs() {
 
 # Restart the container
 restart() {
-    if docker-compose ps | grep -q probixel; then
-        docker-compose restart probixel
+    if docker-compose -f "$(dirname "$0")/docker-compose.example.yml" ps | grep -q probixel; then
+        docker-compose -f "$(dirname "$0")/docker-compose.example.yml" restart probixel
     else
         docker restart probixel
     fi

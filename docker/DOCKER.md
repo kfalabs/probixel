@@ -6,14 +6,14 @@
 
 1. **Create your configuration file and docker-compose.yml:**
    ```bash
-   cp config.example.yaml config.yaml
-   cp docker-compose.example.yml docker-compose.yml
+   cp config.example.yaml docker/config.yaml
+   cp docker/docker-compose.example.yml docker/docker-compose.yml
    # Edit files with your settings
    ```
 
 2. **Build and run:**
    ```bash
-   docker-compose up -d
+   docker-compose -f docker/docker-compose.yml up -d
    ```
 
 3. **View logs:**
@@ -23,14 +23,14 @@
 
 4. **Stop the container:**
    ```bash
-   docker-compose down
+   docker-compose -f docker/docker-compose.yml down
    ```
 
 ### Using Docker CLI
 
 1. **Build the image:**
    ```bash
-   docker build -t kfalabs/probixel:latest .
+   docker build -t kfalabs/probixel:latest -f docker/Dockerfile .
    ```
 
 2. **Run the container:**
@@ -38,14 +38,14 @@
    # From Docker Hub
    docker run -d \
      --name probixel \
-     -v $(pwd)/config.yaml:/app/config.yaml:ro \
+     -v $(pwd)/docker/config.yaml:/app/config.yaml:ro \
      --restart unless-stopped \
      kfalabs/probixel:latest
 
    # From GitHub Container Registry
    docker run -d \
      --name probixel \
-     -v $(pwd)/config.yaml:/app/config.yaml:ro \
+     -v $(pwd)/docker/config.yaml:/app/config.yaml:ro \
      --restart unless-stopped \
      ghcr.io/kfalabs/probixel:latest
    ```
@@ -68,7 +68,7 @@ The container expects a configuration file at `/app/config.yaml`. You have sever
 ### Option 1: Volume Mount (Recommended)
 Mount your local config file:
 ```bash
--v $(pwd)/config.yaml:/app/config.yaml:ro
+-v $(pwd)/docker/config.yaml:/app/config.yaml:ro
 ```
 
 ### Option 2: Build-time Copy
@@ -104,13 +104,13 @@ data:
 ### Bridge Network (Default)
 Suitable when monitoring external services:
 ```bash
-docker run -d --name probixel -v $(pwd)/config.yaml:/app/config.yaml:ro kfalabs/probixel:latest
+docker run -d --name probixel -v $(pwd)/docker/config.yaml:/app/config.yaml:ro kfalabs/probixel:latest
 ```
 
 ### Host Network
 Required when monitoring services on the Docker host:
 ```bash
-docker run -d --name probixel --network host -v $(pwd)/config.yaml:/app/config.yaml:ro kfalabs/probixel:latest
+docker run -d --name probixel --network host -v $(pwd)/docker/config.yaml:/app/config.yaml:ro kfalabs/probixel:latest
 ```
 
 Or in docker-compose.yml:
@@ -125,7 +125,7 @@ services:
 ### Custom Entrypoint
 ```bash
 docker run -it --rm \
-  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  -v $(pwd)/docker/config.yaml:/app/config.yaml:ro \
   kfalabs/probixel:latest \
   -config /app/config.yaml -verbose
 ```
@@ -149,7 +149,7 @@ docker run -d \
   --name probixel \
   --memory="128m" \
   --cpus="0.5" \
-  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  -v $(pwd)/docker/config.yaml:/app/config.yaml:ro \
   kfalabs/probixel:latest
 ```
 
@@ -159,12 +159,12 @@ The `Dockerfile` is optimized to use **native Go cross-compilation**, which avoi
 
 Build for ARM64 (e.g., Raspberry Pi):
 ```bash
-docker buildx build --platform linux/arm64 -t probixel:arm64 .
+docker buildx build --platform linux/arm64 -t probixel:arm64 -f docker/Dockerfile .
 ```
 
 Build for multiple platforms:
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t kfalabs/probixel:latest .
+docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t kfalabs/probixel:latest -f docker/Dockerfile .
 ```
 
 ## Kubernetes Deployment
@@ -227,5 +227,5 @@ Common issues:
 ### Config auto-reload not working
 Ensure the config file is mounted as a volume (not copied at build time):
 ```bash
--v $(pwd)/config.yaml:/app/config.yaml:ro
+-v $(pwd)/docker/config.yaml:/app/config.yaml:ro
 ```

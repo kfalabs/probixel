@@ -55,21 +55,21 @@ make build-native
 
 ```bash
 # Using Docker Compose (recommended)
-cp config.example.yaml config.yaml
-cp docker-compose.example.yml docker-compose.yml
-# Edit config.yaml and docker-compose.yml with your settings
-docker-compose up -d
+cp config.example.yaml docker/config.yaml
+cp docker/docker-compose.example.yml docker/docker-compose.yml
+# Edit docker/config.yaml and docker/docker-compose.yml with your settings
+docker-compose -f docker/docker-compose.yml up -d
 
 # Or using Docker Hub
 docker pull kfalabs/probixel:latest
-docker run -d --name probixel -v $(pwd)/config.yaml:/app/config.yaml:ro kfalabs/probixel:latest
+docker run -d --name probixel -v $(pwd)/docker/config.yaml:/app/config.yaml:ro kfalabs/probixel:latest
 
 # Or using GHCR
 docker pull ghcr.io/kfalabs/probixel:latest
-docker run -d --name probixel -v $(pwd)/config.yaml:/app/config.yaml:ro ghcr.io/kfalabs/probixel:latest
+docker run -d --name probixel -v $(pwd)/docker/config.yaml:/app/config.yaml:ro ghcr.io/kfalabs/probixel:latest
 ```
 
-For detailed Docker usage, configuration options, and deployment examples, see [DOCKER.md](DOCKER.md).
+For detailed Docker usage, configuration options, and deployment examples, see [DOCKER.md](docker/DOCKER.md).
 
 ## Configuration Auto-Reload
 
@@ -637,7 +637,7 @@ This project uses GitHub Actions for continuous integration and deployment:
 
 ### Docker Builds
 
-For detailed Docker usage, configuration options, and deployment examples, see [DOCKER.md](DOCKER.md).
+For detailed Docker usage, configuration options, and deployment examples, see [DOCKER.md](docker/DOCKER.md).
 
 ## License
 

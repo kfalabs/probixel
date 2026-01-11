@@ -17,6 +17,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Copy source code
 COPY . .
 
+# Run tests
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go test -v ./...
+
 # ARGs for cross-compilation (populated automatically by Docker Buildx)
 ARG TARGETOS
 ARG TARGETARCH

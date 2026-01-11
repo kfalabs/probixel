@@ -7,7 +7,7 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
 build: ## Build the Docker image
-	docker build -t probixel:latest .
+	docker build -t probixel:latest -f docker/Dockerfile .
 
 run: ## Run container with Docker CLI
 	@if [ ! -f config.yaml ]; then \
@@ -21,21 +21,21 @@ run: ## Run container with Docker CLI
 		probixel:latest
 
 up: ## Start with docker-compose
-	docker-compose up -d
+	docker-compose -f docker/docker-compose.example.yml up -d
 
 down: ## Stop docker-compose
-	docker-compose down
+	docker-compose -f docker/docker-compose.example.yml down
 
 logs: ## View container logs
-	@if docker-compose ps | grep -q probixel; then \
-		docker-compose logs -f probixel; \
+	@if docker-compose -f docker/docker-compose.example.yml ps | grep -q probixel; then \
+		docker-compose -f docker/docker-compose.example.yml logs -f probixel; \
 	else \
 		docker logs -f probixel; \
 	fi
 
 restart: ## Restart the container
-	@if docker-compose ps | grep -q probixel; then \
-		docker-compose restart probixel; \
+	@if docker-compose -f docker/docker-compose.example.yml ps | grep -q probixel; then \
+		docker-compose -f docker/docker-compose.example.yml restart probixel; \
 	else \
 		docker restart probixel; \
 	fi
@@ -67,7 +67,7 @@ run-native: ## Run native binary
 
 # Multi-architecture builds
 build-arm64: ## Build for ARM64 (e.g., Raspberry Pi)
-	docker buildx build --platform linux/arm64 -t probixel:arm64 .
+	docker buildx build --platform linux/arm64 -t probixel:arm64 -f docker/Dockerfile .
 
 build-multi: ## Build for multiple architectures
-	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t probixel:latest .
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t probixel:latest -f docker/Dockerfile .
