@@ -78,7 +78,6 @@ func TestPingProbe_Check(t *testing.T) {
 	probe := &PingProbe{}
 	ctx := context.Background()
 
-	// Test 1: Ping mocked success
 	t.Run("Ping Success", func(t *testing.T) {
 		res, err := probe.Check(ctx, "localhost.test")
 		if err != nil {
@@ -92,7 +91,6 @@ func TestPingProbe_Check(t *testing.T) {
 		}
 	})
 
-	// Test 2: Ping mocked failure
 	t.Run("Ping Failure", func(t *testing.T) {
 		res, err := probe.Check(ctx, "unreachable.test")
 		if err != nil {

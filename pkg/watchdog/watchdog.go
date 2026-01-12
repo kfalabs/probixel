@@ -115,7 +115,7 @@ func (w *Watchdog) run(ctx context.Context) {
 		// Calculate and set success window for WireGuard tunnels
 		agent.SetupWireguardWindows(currentCfg, w.tunnelRegistry)
 
-		// Phase 1: Initialize all probes
+		// Initialize all probes
 		type serviceProbe struct {
 			svc   config.Service
 			probe monitor.Probe
@@ -131,7 +131,7 @@ func (w *Watchdog) run(ctx context.Context) {
 			serviceProbes = append(serviceProbes, serviceProbe{svc: svc, probe: probe})
 		}
 
-		// Phase 3: Start all service monitors
+		// Start all service monitors
 		if StartingWindow > 0 {
 			log.Printf("Waiting %v for application to start...", StartingWindow)
 			time.Sleep(StartingWindow)
