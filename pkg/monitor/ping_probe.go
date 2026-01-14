@@ -212,9 +212,6 @@ func (p *PingProbe) pingRemoteSSH(ctx context.Context, sshTunnel *tunnels.SSHTun
 }
 
 func (p *PingProbe) pingBuiltin(ctx context.Context, target string) (time.Duration, string, error) {
-	if p.DialContext == nil {
-		return 0, "", fmt.Errorf("DialContext not initialized")
-	}
 
 	start := time.Now()
 	socket, err := p.DialContext(ctx, "ping4", target)

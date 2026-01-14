@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -563,4 +566,122 @@ func TestSetupProbe_WithTunnelDialer(t *testing.T) {
 	if probe.Name() != "tcp" {
 		t.Errorf("expected name tcp, got %s", probe.Name())
 	}
+}
+
+func TestSetupProbe_WithTunnelDialer_ErrorPath(t *testing.T) {
+	registry := tunnels.NewRegistry()
+
+	// Track if ReportFailure was called
+	failureCalled := false
+	mockT := &tunnels.MockTunnel{
+		NameFunc:           func() string { return "ssh-tunnel" },
+		TypeFunc:           func() string { return "ssh" },
+		IsStabilizedResult: true, // tunnel is stabilized, so error should trigger ReportFailure
+		ReportFailureFunc:  func() { failureCalled = true },
+		DialContextFunc: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return nil, fmt.Errorf("dial error")
+		},
+	}
+	_ = registry.Register(mockT)
+
+	cfg := &config.Config{}
+	svc := config.Service{
+		Name:     "test-tunnel-dialer-error",
+		Type:     "tcp",
+		Tunnel:   "ssh-tunnel",
+		Targets:  []string{"remote:80"},
+		Interval: "60s",
+	}
+
+	probe, err := SetupProbe(svc, cfg, registry)
+	if err != nil {
+		t.Fatalf("SetupProbe failed: %v", err)
+	}
+
+	// Now invoke the dialer to exercise the error path
+	tcpProbe := probe.(*monitor.TCPProbe)
+	if tcpProbe.DialContext == nil {
+		t.Fatal("Expected DialContext to be set")
+	}
+
+	// Call the dialer, which should fail and call ReportFailure
+	_, dialErr := tcpProbe.DialContext(context.Background(), "tcp", "remote:80")
+	if dialErr == nil {
+		t.Error("Expected dial error")
+	}
+	if !failureCalled {
+		t.Error("Expected ReportFailure to be called when dial fails on stabilized tunnel")
+	}
+}
+
+func TestSetupProbe_WithTunnelDialer_NotStabilized(t *testing.T) {
+	registry := tunnels.NewRegistry()
+
+	failureCalled := false
+	mockT := &tunnels.MockTunnel{
+		NameFunc:           func() string { return "ssh-tunnel" },
+		TypeFunc:           func() string { return "ssh" },
+		IsStabilizedResult: false, // tunnel NOT stabilized, so error should NOT trigger ReportFailure
+		ReportFailureFunc:  func() { failureCalled = true },
+		DialContextFunc: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return nil, fmt.Errorf("dial error")
+		},
+	}
+	_ = registry.Register(mockT)
+
+	cfg := &config.Config{}
+	svc := config.Service{
+		Name:     "test-tunnel-dialer-not-stabilized",
+		Type:     "tcp",
+		Tunnel:   "ssh-tunnel",
+		Targets:  []string{"remote:80"},
+		Interval: "60s",
+	}
+
+	probe, err := SetupProbe(svc, cfg, registry)
+	if err != nil {
+		t.Fatalf("SetupProbe failed: %v", err)
+	}
+
+	tcpProbe := probe.(*monitor.TCPProbe)
+	_, dialErr := tcpProbe.DialContext(context.Background(), "tcp", "remote:80")
+	if dialErr == nil {
+		t.Error("Expected dial error")
+	}
+	if failureCalled {
+		t.Error("ReportFailure should NOT be called when tunnel is not stabilized")
+	}
+}
+
+func TestSetupProbe_InitializationFailure(t *testing.T) {
+	registry := tunnels.NewRegistry()
+	cfg := &config.Config{}
+
+	// WireGuard probe without config will fail initialization
+	svc := config.Service{
+		Name:     "init-fail",
+		Type:     "wireguard",
+		Interval: "60s",
+	}
+
+	_, err := SetupProbe(svc, cfg, registry)
+	if err == nil {
+		t.Fatal("expected initialization error")
+	}
+	if !contains(err.Error(), "early initialization failed") {
+		t.Errorf("expected 'early initialization failed' error, got: %v", err)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

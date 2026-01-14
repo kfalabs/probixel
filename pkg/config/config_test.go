@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+func ptrInt(i int) *int {
+	return &i
+}
+
 func TestLoadConfig(t *testing.T) {
 	// Create a temporary config file
 	content := `
@@ -788,6 +792,53 @@ services:
 			"ssh requires at least a 'target' OR a root 'tunnel'",
 		},
 		{
+			name: "notifier_time_exceeds_interval",
+			content: `
+global:
+  default_interval: "10s"
+services:
+  - name: "TooSlow"
+    type: "http"
+    url: "http://test"
+    retries: 0 # Ensure we don't hit probe time validation first
+    monitor_endpoint:
+      success: {url: "http://ok", timeout: "3s"}
+      retries: 3
+`,
+			wantErr: "total notifier time (13s) including 3 retries and 1s buffer must be less than interval (10s)",
+		},
+		{
+			name: "notifier_time_exceeds_interval_with_global_default",
+			content: `
+global:
+  default_interval: "10s"
+  monitor_endpoint:
+    retries: 1
+services:
+  - name: "TooSlowGlobal"
+    type: "http"
+    url: "http://test"
+    retries: 0 # Ensure we don't hit probe time validation first
+    monitor_endpoint:
+      success: {url: "http://ok", timeout: "5s"}
+`,
+			wantErr: "total notifier time (11s) including 1 retries and 1s buffer must be less than interval (10s)",
+		},
+		{
+			name: "notifier_negative_retries",
+			content: `
+services:
+  - name: "NegativeRetries"
+    type: "http"
+    url: "http://test"
+    interval: "1m"
+    monitor_endpoint:
+      success: {url: "http://ok"}
+      retries: -1
+`,
+			wantErr: "monitor_endpoint.retries cannot be negative",
+		},
+		{
 			"ssh_auth_required_missing_user",
 			`
 services:
@@ -838,6 +889,50 @@ services:
     monitor_endpoint: {success: {url: "http://ok"}}
 `,
 			"",
+		},
+		{
+			name: "probe_time_exceeds_interval",
+			content: `
+global:
+  default_interval: "10s"
+  monitor:
+    retries: 3
+services:
+  - name: "ProbeTooSlow"
+    type: "http"
+    url: "http://test"
+    timeout: "3s"
+    monitor_endpoint: {success: {url: "http://ok"}}
+`,
+			wantErr: "total probe time (13s) including 3 retries and 1s buffer must be less than interval (10s)",
+		},
+		{
+			name: "probe_exemptions_pass",
+			content: `
+global:
+  default_interval: "5s"
+  monitor:
+    retries: 5
+  monitor_endpoint:
+    retries: 0
+services:
+  - name: "HostExempt"
+    type: "host"
+    timeout: "4s"
+    monitor_endpoint: {retries: 0, success: {url: "http://ok"}}
+  - name: "WireguardExempt"
+    type: "wireguard"
+    interval: "5s"
+    timeout: "4s"
+    wireguard:
+      max_age: "5m"
+      endpoint: "e"
+      public_key: "pub"
+      private_key: "priv"
+      addresses: "1.1.1.1/32"
+    monitor_endpoint: {retries: 0, success: {url: "http://ok", timeout: "1s"}}
+`,
+			wantErr: "",
 		},
 		{
 			"ssh_targets_list_fails",
@@ -918,6 +1013,39 @@ services:
     monitor_endpoint: {success: {url: "http://ok"}}
 `,
 			"service \"S1\" timeout (5s) must be less than interval (2s)",
+		},
+		{
+			name: "probe_retries_zero_passes_validation",
+			content: `
+global:
+  default_interval: "5s"
+  monitor_endpoint:
+    retries: 0
+services:
+  - name: "ZeroRetryService"
+    type: "http"
+    url: "http://example.com"
+    interval: "5s"
+    timeout: "3s"
+    retries: 0
+    monitor_endpoint: {retries: 0, success: {url: "http://ok", timeout: "1s"}}
+`,
+			wantErr: "",
+		},
+		{
+			name: "probe_retries_default_three_fails_validation",
+			content: `
+global:
+  default_interval: "5s"
+services:
+  - name: "DefaultRetryService"
+    type: "http"
+    url: "http://example.com"
+    interval: "5s"
+    timeout: "3s"
+    monitor_endpoint: {success: {url: "http://ok", timeout: "1s"}}
+`,
+			wantErr: "total probe time (13s) including 3 retries and 1s buffer must be less than interval (5s)",
 		},
 	}
 
@@ -1959,8 +2087,10 @@ func TestValidate_ValidTimeouts(t *testing.T) {
 				URL:      "http://example.com",
 				Interval: "10s",
 				Timeout:  "5s",
+				Retries:  ptrInt(0),
 				HTTP:     &HTTPConfig{},
 				MonitorEndpoint: MonitorEndpointConfig{
+					Retries: ptrInt(0),
 					Success: EndpointConfig{URL: "http://ok"},
 				},
 			},

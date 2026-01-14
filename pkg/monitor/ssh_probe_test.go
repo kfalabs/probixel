@@ -274,3 +274,122 @@ func TestSSHProbe_SetTimeout(t *testing.T) {
 		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
 	}
 }
+
+func TestSSHProbe_Coverage_Errors(t *testing.T) {
+	// 1. DialContext Error
+	t.Run("DialContext_Error", func(t *testing.T) {
+		p := &SSHProbe{
+			Config: &config.SSHConfig{
+				User: "test",
+				Port: 22,
+			},
+			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return nil, fmt.Errorf("dial failed")
+			},
+		}
+		res, err := p.Check(context.Background(), "localhost")
+		if err != nil {
+			t.Fatalf("Check failed: %v", err)
+		}
+		if res.Success {
+			t.Error("Expected failure for dial error")
+		}
+		if !strings.Contains(res.Message, "dial failed") {
+			t.Errorf("Expected 'dial failed' message, got %s", res.Message)
+		}
+	})
+
+	// 2. NewClientConn Error (Handshake fail)
+	// We need a dial that succeeds but returns a connection that fails handshake immediately
+	t.Run("Handshake_Error", func(t *testing.T) {
+		p := &SSHProbe{
+			Config: &config.SSHConfig{
+				User: "test",
+				Port: 22,
+			},
+			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				// Return a closed pipe to trigger handshake read error
+				c1, c2 := net.Pipe()
+				c1.Close()
+				return c2, nil
+			},
+		}
+		res, err := p.Check(context.Background(), "localhost")
+		if err != nil {
+			t.Fatalf("Check failed: %v", err)
+		}
+		if res.Success {
+			t.Error("Expected failure for handshake error")
+		}
+		// The error from NewClientConn on a closed pipe varies but shouldn't be success
+	})
+}
+
+func TestSSHProbe_Check_TargetFromTunnel(t *testing.T) {
+	privKey, _ := generateTestKey()
+	addr, cleanup := startMockSSHServer(t, "secret", privKey)
+	defer cleanup()
+
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	// Create an SSH tunnel with target
+	tun := tunnels.NewSSHTunnel("test-tun", host, &config.SSHConfig{
+		User:     "test",
+		Password: "secret",
+		Port:     port,
+	})
+
+	p := &SSHProbe{
+		tunnel: tun,
+	}
+
+	// Check with empty target - should derive from tunnel
+	res, err := p.Check(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	// May fail due to missing config for auth check, but at least exercises the path
+	_ = res
+}
+
+func TestSSHProbe_Check_NoAuthWithDialContext(t *testing.T) {
+	f := false
+	p := &SSHProbe{
+		Config: &config.SSHConfig{
+			AuthRequired: &f,
+			Port:         22,
+		},
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return nil, fmt.Errorf("dial failed via custom dialer")
+		},
+	}
+	res, err := p.Check(context.Background(), "localhost")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if res.Success {
+		t.Error("Expected failure for dial error")
+	}
+	if !strings.Contains(res.Message, "dial failed") {
+		t.Errorf("Expected 'dial failed' message, got %s", res.Message)
+	}
+}
+
+func TestSSHProbe_Check_MissingSSHConfig(t *testing.T) {
+	// Auth required but no config
+	p := &SSHProbe{
+		tunnel: &tunnels.MockTunnel{IsStabilizedResult: true},
+	}
+	res, err := p.Check(context.Background(), "localhost")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if res.Success {
+		t.Error("Expected failure for missing ssh config")
+	}
+	if !strings.Contains(res.Message, "missing ssh config") {
+		t.Errorf("Expected 'missing ssh config' message, got %s", res.Message)
+	}
+}

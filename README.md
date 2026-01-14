@@ -117,9 +117,12 @@ global:
   default_interval: "5m"
   monitor_endpoint:
     timeout: "10s" # Optional global default timeout for alert notifications, defaults to 5s.
+    retries: 3 # Global default retries for alert notifications.
     headers:
       Authorization: "Bearer your-common-token"
       X-Environment: "production"
+  monitor:
+    retries: 3 # Global default retries for probes. Use "0" to disable.
   notifier:
     rate_limit: "100ms"
 ```
@@ -131,6 +134,28 @@ global:
   - **Default**: 100ms
   - **Disable**: Set to `"0"`
   - **Validation**: An empty string is invalid and will cause the configuration to fail.
+
+### Retry Logic
+
+Both **Probes** (checks) and **Notifiers** (alerts) support automatic retries on failure.
+
+#### Configuration Hierarchy
+Retries can be configured at the global level and overridden at the service level:
+
+1. **Service Override**: `service.retries` / `service.monitor_endpoint.retries`
+2. **Global Default**: `global.monitor.retries` / `global.monitor_endpoint.retries`
+3. **Hardcoded Default**: `3` (if neither is set)
+
+> [!TIP]
+> **Disabling Retries**: Setting `retries: 0` (either globally or at the service level) effectively disables the retry logic. This is particularly useful for meeting strict validation rules when the timeout and interval are very close.
+
+#### Validation Rules
+To ensure monitoring cycles don't overlap, the total potential duration of a check or alert push must fit within the service interval:
+
+**Formula**: `(retries + 1) * timeout + 1s (buffer) < interval`
+
+**Exemptions**: 
+- `host` and `wireguard` probes are exempt from retry validation (forced to 0 retries).
 
 ### Docker Sockets
 
@@ -201,7 +226,9 @@ This allows you to perform health checks against internal targets without comple
 
 ### Services / Probe Types
 
-### HTTP
+The following sections describe each supported probe type and their configuration options.
+
+#### HTTP
 Monitors HTTP/HTTPS endpoints with optional "intelligent" response validation.
 - **Fields**: `url` (required), `timeout` (optional), `http:` block (optional)
 - **HTTP Block**: `method` (optional), `headers` (optional), `accepted_status_codes` (optional, string e.g., "200-299, 404"), `insecure_skip_verify` (optional), `match_data` (optional), `certificate_expiry` (optional)
@@ -261,7 +288,7 @@ The `match_data` block allows you to validate the response body or headers.
 
 If the `certificate_expiry` and `match_data` are both provided, the probe will run both checks and fail if either check fails.
 
-### TLS Check
+#### TLS Check
 - **Fields**: `url` (required), `timeout` (optional), `tls:` block (required)
 - **TLS Block**: `insecure_skip_verify` (optional), `certificate_expiry` (required)
 - **Example**:
@@ -284,7 +311,7 @@ If the `certificate_expiry` and `match_data` are both provided, the probe will r
 
 **Note on Time Comparisons**: If the `value` is a duration (e.g., `10m`), Probixel automatically parses the response field as a timestamp and checks if its age (`now - lastSeen`) is within that limit.
 
-### TCP
+#### TCP
 Checks TCP port connectivity.
 - **Fields**: `targets` (required), `target_mode` (optional), `timeout` (optional)
 - **Format**: `host:port`
@@ -304,7 +331,7 @@ Checks TCP port connectivity.
         url: "https://uptime.probixel.test/api/push/failure?error={%error%}"
   ```
 
-### UDP
+#### UDP
 Verifies UDP port reachability.
 - **Configuration Block**: `udp:` (Uses the TCP target logic)
 - **Fields**: `targets` (required), `timeout` (optional)
@@ -326,7 +353,7 @@ Verifies UDP port reachability.
         url: "https://uptime.probixel.test/api/push/failure?error={%error%}"
   ```
 
-### DNS
+#### DNS
 - **Fields**: `targets` (required), `target_mode` (optional), `timeout` (optional), `dns:` block (optional)
 - **DNS Block**: `domain` (optional)
 - **Format**: `nameserver:port` (port defaults to 53)
@@ -347,7 +374,7 @@ Verifies UDP port reachability.
         url: "https://uptime.probixel.test/api/push/failure?error={%error%}"
   ```
 
-### Ping
+#### Ping
 - **Fields**: `targets` (required), `target_mode` (optional), `timeout` (optional)
 - **Example**:
   ```yaml
@@ -365,7 +392,7 @@ Verifies UDP port reachability.
         url: "https://uptime.probixel.test/api/push/failure?error={%error%}"
   ```
 
-### Host
+#### Host
 - **Fields**: `targets` (optional), `target_mode` (optional)
 - **Behavior**: Heartbeat checks, also checks that the agent is running and the host is online.
 - **Example**:
@@ -380,7 +407,7 @@ Verifies UDP port reachability.
         url: "https://uptime.probixel.test/api/push/failure?error={%error%}"
   ```
 
-### WireGuard
+#### WireGuard
 Monitors a WireGuard VPN tunnel health via handshake timestamps. No external targets are required; health is determined by the most recent successful handshake with the peer.
 
 - **Fields**: `tunnel` (required if `wireguard` block is not present), `wireguard:` block (required if `tunnel` is not present)
@@ -433,7 +460,7 @@ Monitors a WireGuard VPN tunnel health via handshake timestamps. No external tar
   ```
 
 
-### SSH
+#### SSH
 Monitors SSH connectivity and optionally performs authentication.
 - **Fields**: `tunnel` (optional), `target` (optional), `ssh:` block (optional)
 - **Bastion / Jump Host Pattern**: 
@@ -473,7 +500,7 @@ Monitors SSH connectivity and optionally performs authentication.
         url: "https://uptime.test/api/push/ssh-ok"
   ```
 
-### Docker
+#### Docker
 - **Fields**: `tunnel` (optional), `targets` (**required** - container names), `docker:` block (**required**)
 - **Validation Rules**:
   - **Tunnel Support**: If a `tunnel` is specified, the referenced `docker-socket` **must** be a proxied one (using `host`/`port`). Local Unix sockets cannot be used over a tunnel.
@@ -537,12 +564,9 @@ The agent uses a hierarchy for intervals:
 
 
 > [!TIP]
-> **Interval Hierarchy**: Per-service intervals always override the global default.
-
-> [!TIP]
-> **Insecure TLS**: If your alert endpoints use self-signed certificates (e.g., an internal Uptime Kuma instance), you can set `insecure_skip_verify: true` inside the `success` or `failure` block.
-
-**Optional Failures**: The `failure` alert endpoint is optional. If you omit it from both the service configuration and the global configuration, no notification will be sent when a service fails. The `success` endpoint remains required.
+> - **Interval Hierarchy**: Per-service intervals always override the global default.
+> - **Insecure TLS**: If your alert endpoints use self-signed certificates (e.g., an internal Uptime Kuma instance), you can set `insecure_skip_verify: true` inside the `success` or `failure` block.
+> - **Optional Failure Endpoints**: The `failure` alert endpoint is optional. If you omit it, no notification will be sent when a service fails. The `success` endpoint remains required.
 
 ## Alert Endpoints
 

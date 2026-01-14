@@ -84,10 +84,47 @@ func CheckAndPush(ctx context.Context, probe monitor.Probe, serviceName string, 
 		target = strings.Join(svc.Targets, ",")
 	}
 
-	result, err := probe.Check(ctx, target)
-	if err != nil {
-		log.Printf("[%s] Probe internal error: %v", svc.Name, err)
-		return
+	// Determine effective probe retries
+	retries := 3
+	if cfg.Global.Monitor.Retries != nil {
+		retries = *cfg.Global.Monitor.Retries
+	}
+	if svc.Retries != nil {
+		retries = *svc.Retries
+	}
+	// Exempt host and wireguard probes
+	if svc.Type == "host" || svc.Type == "wireguard" {
+		retries = 0
+	}
+
+	var result monitor.Result
+	var lastErr error
+
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			log.Printf("[%s] Retrying probe check (attempt %d/%d)...", svc.Name, attempt, retries)
+		}
+
+		result, lastErr = probe.Check(ctx, target)
+		if lastErr == nil && !result.Pending && result.Success {
+			// Success!
+			break
+		}
+		if lastErr != nil {
+			log.Printf("[%s] Probe internal error: %v", svc.Name, lastErr)
+			// Continue to retry if internal error? Usually yes if it's a transient failure.
+		}
+		if !result.Success && !result.Pending && attempt < retries {
+			// Failed but have retries left
+			continue
+		}
+		// If we reach here, it's either success, pending, or we're out of retries
+		break
+	}
+
+	if lastErr != nil && result.Message == "" {
+		// Ensure we have a message if we failed with an error
+		result.Message = lastErr.Error()
 	}
 
 	if result.Success && svc.Tunnel != "" {
@@ -104,7 +141,7 @@ func CheckAndPush(ctx context.Context, probe monitor.Probe, serviceName string, 
 	}
 	log.Printf("[%s] %s (%s) %v", svc.Name, status, result.Message, result.Duration)
 
-	if err := pusher.Push(result, svc.MonitorEndpoint, cfg.Global.MonitorEndpoint); err != nil {
+	if err := pusher.Push(ctx, result, svc.MonitorEndpoint, cfg.Global.MonitorEndpoint); err != nil {
 		log.Printf("[%s] Failed to push alert: %v", svc.Name, err)
 	}
 }

@@ -233,8 +233,35 @@ func (c *Config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("service %q timeout is invalid: %w", svc.Name, err)
 		}
+
+		// Determine effective probe retries
+		probeRetries := 3 // Hardcoded default fallback (should be set by Validate globals but safe to have)
+		if c.Global.Monitor.Retries != nil {
+			probeRetries = *c.Global.Monitor.Retries
+		}
+		if svc.Retries != nil {
+			probeRetries = *svc.Retries
+		}
+
+		// Exempt host and wireguard probes from retries
+		if svc.Type == "host" || svc.Type == "wireguard" {
+			probeRetries = 0
+		}
+
+		if probeRetries < 0 {
+			return fmt.Errorf("service %q: retries cannot be negative", svc.Name)
+		}
+
 		if timeout >= interval {
 			return fmt.Errorf("service %q timeout (%v) must be less than interval (%v)", svc.Name, timeout, interval)
+		}
+
+		// Validate (retries + 1) * timeout + 1s buffer < interval (exempt host/wireguard and when retries is 0)
+		if probeRetries > 0 {
+			totalProbeTime := time.Duration(probeRetries+1)*timeout + time.Second
+			if totalProbeTime >= interval {
+				return fmt.Errorf("service %q: total probe time (%v) including %d retries and 1s buffer must be less than interval (%v)", svc.Name, totalProbeTime, probeRetries, interval)
+			}
 		}
 
 		// Validate monitor endpoint timeouts
@@ -253,9 +280,62 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("service %q monitor_endpoint.failure.timeout is invalid: %w", svc.Name, err)
 			}
 		}
+
+		// Validate notifier retries and effective timeout against service interval
+		// 1. Determine effective timeout for this service's notifier
+		// hierarchy: endpoint > service-shared > global > default (5s)
+		// We'll check Success endpoint specifically as it's mandatory
+		notifierTimeoutStr := svc.MonitorEndpoint.Success.Timeout
+		if notifierTimeoutStr == "" {
+			notifierTimeoutStr = svc.MonitorEndpoint.Timeout
+		}
+		if notifierTimeoutStr == "" {
+			notifierTimeoutStr = c.Global.MonitorEndpoint.Timeout
+		}
+
+		notifierTimeout := 5 * time.Second // Default
+		if notifierTimeoutStr != "" {
+			if d, err := ParseDuration(notifierTimeoutStr); err == nil && d > 0 {
+				notifierTimeout = d
+			}
+		}
+
+		// 2. Determine effective retries
+		// Determine effective retries: service-level > global > default (3)
+		retries := 3 // default
+		if c.Global.MonitorEndpoint.Retries != nil {
+			retries = *c.Global.MonitorEndpoint.Retries
+		}
+		if svc.MonitorEndpoint.Retries != nil {
+			retries = *svc.MonitorEndpoint.Retries
+		}
+
+		if retries < 0 {
+			return fmt.Errorf("service %q: monitor_endpoint.retries cannot be negative", svc.Name)
+		}
+
+		// 3. Validate (retries + 1) * timeout + 1s buffer < interval (skip when retries is 0)
+		if retries > 0 {
+			totalNotifierTime := time.Duration(retries+1)*notifierTimeout + time.Second
+			if totalNotifierTime >= interval {
+				return fmt.Errorf("service %q: total notifier time (%v) including %d retries and 1s buffer must be less than interval (%v)", svc.Name, totalNotifierTime, retries, interval)
+			}
+		}
 	}
 
-	// Validate global monitor endpoint timeout
+	// Validate global monitor endpoint retries
+	if c.Global.MonitorEndpoint.Retries != nil && *c.Global.MonitorEndpoint.Retries < 0 {
+		return fmt.Errorf("global monitor_endpoint.retries cannot be negative")
+	}
+
+	// Validate global monitor retries
+	if c.Global.Monitor.Retries == nil {
+		three := 3
+		c.Global.Monitor.Retries = &three
+	} else if *c.Global.Monitor.Retries < 0 {
+		return fmt.Errorf("global monitor.retries cannot be negative")
+	}
+
 	if c.Global.MonitorEndpoint.Timeout != "" {
 		if _, err := ParseDuration(c.Global.MonitorEndpoint.Timeout); err != nil {
 			return fmt.Errorf("global monitor_endpoint.timeout is invalid: %w", err)
@@ -268,7 +348,12 @@ func (c *Config) Validate() error {
 type GlobalConfig struct {
 	DefaultInterval string                      `yaml:"default_interval,omitempty"`
 	MonitorEndpoint GlobalMonitorEndpointConfig `yaml:"monitor_endpoint,omitempty"`
+	Monitor         MonitorConfig               `yaml:"monitor,omitempty"`
 	Notifier        NotifierConfig              `yaml:"notifier,omitempty"`
+}
+
+type MonitorConfig struct {
+	Retries *int `yaml:"retries,omitempty"` // Pointer to distinguish 0 (disable) from missing (default)
 }
 
 type NotifierConfig struct {
@@ -286,6 +371,7 @@ type DockerSocketConfig struct {
 type GlobalMonitorEndpointConfig struct {
 	Headers map[string]string `yaml:"headers,omitempty"`
 	Timeout string            `yaml:"timeout,omitempty"`
+	Retries *int              `yaml:"retries,omitempty"` // Pointer to distinguish 0 (disable) from missing (default 3)
 }
 
 type Service struct {
@@ -311,6 +397,7 @@ type Service struct {
 	TLS       *TLSConfig       `yaml:"tls,omitempty"`
 	UDP       *UDPConfig       `yaml:"udp,omitempty"`
 	SSH       *SSHConfig       `yaml:"ssh,omitempty"`
+	Retries   *int             `yaml:"retries,omitempty"` // Service-level override
 }
 
 type HTTPConfig struct {
@@ -398,6 +485,7 @@ type MonitorEndpointConfig struct {
 	Failure *EndpointConfig   `yaml:"failure,omitempty"`
 	Headers map[string]string `yaml:"headers,omitempty"` // Common headers for both
 	Timeout string            `yaml:"timeout,omitempty"` // Common timeout for both
+	Retries *int              `yaml:"retries,omitempty"` // Service-level override
 }
 
 type EndpointConfig struct {
