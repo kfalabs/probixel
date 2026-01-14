@@ -5,6 +5,8 @@ import (
 	"probixel/pkg/config"
 	"testing"
 	"time"
+
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 func TestWireguardTunnel_Basic(t *testing.T) {
@@ -270,4 +272,12 @@ func TestWireguardTunnel_GetLastHandshakeTime(t *testing.T) {
 		// Handshake is not guaranteed, so just verify it doesn't crash
 		_ = handshake
 	}
+}
+
+func TestWireguardTunnel_SetDeviceFactory(t *testing.T) {
+	w := NewWireguardTunnel("test", &config.WireguardConfig{})
+	w.SetDeviceFactory(func() (WGDevice, *netstack.Net, error) {
+		return nil, nil, nil // Mock factory
+	})
+	// Just verify it doesn't panic. Function is for dependency injection.
 }

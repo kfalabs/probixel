@@ -467,3 +467,148 @@ func testingContains(s, substr string) bool {
 	}
 	return false
 }
+
+// mockWireguardTunnel implements the interfaces expected by WireguardProbe.Check
+type mockWireguardTunnel struct {
+	tunnels.MockTunnel
+	config *config.WireguardConfig
+	dev    tunnels.WGDevice
+}
+
+func (m *mockWireguardTunnel) Config() *config.WireguardConfig {
+	return m.config
+}
+
+func (m *mockWireguardTunnel) Device() tunnels.WGDevice {
+	return m.dev
+}
+
+func TestWireguardProbe_Check_InvalidMaxAgeFromTunnel(t *testing.T) {
+	mock := &mockWGDevice{
+		uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", time.Now().Unix()),
+	}
+
+	tunnel := &mockWireguardTunnel{
+		MockTunnel: tunnels.MockTunnel{
+			IsStabilizedResult: true,
+		},
+		config: &config.WireguardConfig{
+			MaxAge: "invalid", // This should trigger the tunnel config fallback error
+		},
+		dev: mock,
+	}
+
+	// No Config on probe, should fallback to tunnel
+	p := &WireguardProbe{
+		tunnel:   tunnel,
+		dev:      mock,
+		initTime: time.Now().Add(-1 * time.Hour),
+	}
+
+	res, err := p.Check(context.Background(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Success {
+		t.Error("expected failure for invalid max_age from tunnel")
+	}
+	if !testingContains(res.Message, "invalid max_age from tunnel") {
+		t.Errorf("unexpected message: %s", res.Message)
+	}
+}
+
+func TestWireguardProbe_Check_TunnelConfigFallbackValid(t *testing.T) {
+	mock := &mockWGDevice{
+		uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", time.Now().Unix()),
+	}
+
+	tunnel := &mockWireguardTunnel{
+		MockTunnel: tunnels.MockTunnel{
+			IsStabilizedResult: true,
+		},
+		config: &config.WireguardConfig{
+			MaxAge: "5m", // Valid max_age from tunnel config
+		},
+		dev: mock,
+	}
+
+	// No Config on probe, should fallback to tunnel and succeed
+	p := &WireguardProbe{
+		tunnel:   tunnel,
+		dev:      mock,
+		initTime: time.Now().Add(-1 * time.Hour),
+	}
+
+	res, err := p.Check(context.Background(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("expected success, got: %s", res.Message)
+	}
+}
+
+func TestWireguardProbe_Check_ZeroHandshakeWithTunnel(t *testing.T) {
+	failureCalled := false
+	mock := &mockWGDevice{
+		uapi: "last_handshake_time_sec=0\n",
+	}
+
+	tunnel := &tunnels.MockTunnel{
+		IsStabilizedResult: true,
+		ReportFailureFunc:  func() { failureCalled = true },
+	}
+
+	p := &WireguardProbe{
+		Config: &config.WireguardConfig{
+			MaxAge: "5m",
+		},
+		tunnel:   tunnel,
+		dev:      mock,
+		initTime: time.Now().Add(-1 * time.Hour),
+	}
+
+	res, err := p.Check(context.Background(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Pending {
+		t.Error("expected Pending: true for zero handshake")
+	}
+	if !failureCalled {
+		t.Error("expected ReportFailure to be called")
+	}
+}
+
+func TestWireguardProbe_Check_StaleHandshakeWithTunnel(t *testing.T) {
+	failureCalled := false
+	staleTime := time.Now().Add(-10 * time.Minute).Unix()
+	mock := &mockWGDevice{
+		uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", staleTime),
+	}
+
+	tunnel := &tunnels.MockTunnel{
+		IsStabilizedResult: true,
+		ReportFailureFunc:  func() { failureCalled = true },
+	}
+
+	p := &WireguardProbe{
+		Config: &config.WireguardConfig{
+			MaxAge: "5m",
+		},
+		tunnel:   tunnel,
+		dev:      mock,
+		initTime: time.Now().Add(-1 * time.Hour),
+	}
+
+	res, err := p.Check(context.Background(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Success {
+		t.Error("expected failure for stale handshake")
+	}
+	if !failureCalled {
+		t.Error("expected ReportFailure to be called")
+	}
+}

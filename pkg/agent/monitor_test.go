@@ -12,7 +12,10 @@ import (
 	"probixel/pkg/tunnels"
 )
 
-// MockProbe for testing
+func ptrInt(i int) *int {
+	return &i
+}
+
 type mockProbe struct {
 	name        string
 	checkResult monitor.Result
@@ -329,5 +332,91 @@ func TestRunServiceMonitor_UsesGlobalDefaultInterval(t *testing.T) {
 		// success
 	case <-time.After(2 * time.Second):
 		t.Fatal("RunServiceMonitor did not stop after context cancellation")
+	}
+}
+func TestCheckAndPush_ProbeRetries(t *testing.T) {
+	ctx := context.Background()
+	svcName := "retry-service"
+	cfg := &config.Config{
+		Global: config.GlobalConfig{
+			Monitor: config.MonitorConfig{
+				Retries: ptrInt(3),
+			},
+		},
+		Services: []config.Service{
+			{Name: svcName, Target: "target", Type: "http"},
+		},
+	}
+	state := NewConfigState(cfg)
+	registry := tunnels.NewRegistry()
+	pusher := notifier.NewPusher()
+
+	attempts := 0
+	p := &mockProbe{
+		name: svcName,
+		// Custom Check implementation for this test
+	}
+
+	// We need to override Check for this specific test to track attempts
+	checkFunc := func(ctx context.Context, target string) (monitor.Result, error) {
+		attempts++
+		if attempts < 3 {
+			return monitor.Result{Success: false, Message: "failed"}, nil
+		}
+		return monitor.Result{Success: true, Message: "OK"}, nil
+	}
+
+	// Since we can't easily override methods in Go without interfaces or function fields,
+	// let's create a specialized mock probe for this test.
+	sp := &statusMockProbe{
+		mockProbe: *p,
+		checkFunc: checkFunc,
+	}
+
+	CheckAndPush(ctx, sp, svcName, state, registry, pusher)
+
+	if attempts != 3 {
+		t.Errorf("Expected 3 attempts, got %d", attempts)
+	}
+}
+
+type statusMockProbe struct {
+	mockProbe
+	checkFunc func(ctx context.Context, target string) (monitor.Result, error)
+}
+
+func (s *statusMockProbe) Check(ctx context.Context, target string) (monitor.Result, error) {
+	return s.checkFunc(ctx, target)
+}
+
+func TestCheckAndPush_ProbeRetries_Exemptions(t *testing.T) {
+	ctx := context.Background()
+	svcName := "exempt-service"
+	cfg := &config.Config{
+		Global: config.GlobalConfig{
+			Monitor: config.MonitorConfig{
+				Retries: ptrInt(3),
+			},
+		},
+		Services: []config.Service{
+			{Name: svcName, Target: "target", Type: "host"}, // host is exempt
+		},
+	}
+	state := NewConfigState(cfg)
+	registry := tunnels.NewRegistry()
+	pusher := notifier.NewPusher()
+
+	attempts := 0
+	p := &statusMockProbe{
+		checkFunc: func(ctx context.Context, target string) (monitor.Result, error) {
+			attempts++
+			return monitor.Result{Success: false, Message: "failed"}, nil
+		},
+	}
+
+	CheckAndPush(ctx, p, svcName, state, registry, pusher)
+
+	if attempts != 1 {
+		t.Errorf("Expected 1 attempt for exempt host service, got %d", attempts)
 	}
 }

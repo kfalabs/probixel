@@ -1,8 +1,10 @@
 package notifier
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"probixel/pkg/config"
@@ -75,7 +77,7 @@ func replaceTemplateVars(urlStr string, result monitor.Result) string {
 	return urlStr
 }
 
-func (p *Pusher) Push(result monitor.Result, endpointCfg config.MonitorEndpointConfig, globalEndpointCfg config.GlobalMonitorEndpointConfig) error {
+func (p *Pusher) Push(ctx context.Context, result monitor.Result, endpointCfg config.MonitorEndpointConfig, globalEndpointCfg config.GlobalMonitorEndpointConfig) error {
 	if result.SkipNotification || result.Pending {
 		return nil
 	}
@@ -115,7 +117,7 @@ func (p *Pusher) Push(result monitor.Result, endpointCfg config.MonitorEndpointC
 		method = "GET"
 	}
 
-	req, err := http.NewRequest(method, finalURL, nil) // Empty body as per bash script (uses query params)
+	req, err := http.NewRequestWithContext(ctx, method, finalURL, nil) // Empty body as per bash script (uses query params)
 	if err != nil {
 		return err
 	}
@@ -151,6 +153,43 @@ func (p *Pusher) Push(result monitor.Result, endpointCfg config.MonitorEndpointC
 		}
 	}
 
+	// Determine effective retries: service-level > global > default (3)
+	retries := 3 // default
+	if globalEndpointCfg.Retries != nil {
+		retries = *globalEndpointCfg.Retries
+	}
+	if endpointCfg.Retries != nil {
+		retries = *endpointCfg.Retries
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if attempt > 0 {
+			log.Printf("Retrying alert push (attempt %d/%d)...", attempt, retries)
+		}
+
+		lastErr = p.doPush(req, endpoint, timeout)
+		if lastErr == nil {
+			return nil
+		}
+
+		if attempt < retries {
+			// Check context before sleeping or continuing
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
+		}
+	}
+
+	return lastErr
+}
+
+func (p *Pusher) doPush(req *http.Request, endpoint *config.EndpointConfig, timeout time.Duration) error {
 	client := p.Client
 	if endpoint.InsecureSkipVerify {
 		// Create a temporary client with insecure TLS skip
@@ -167,6 +206,11 @@ func (p *Pusher) Push(result monitor.Result, endpointCfg config.MonitorEndpointC
 		newClient.Timeout = timeout
 		client = &newClient
 	}
+
+	// We need to be careful with req.Body if it were present, but NewRequest used nil.
+	// However, client.Do can modify the request (headers, etc).
+	// Actually, req.Header is modified by p.Push before the loop.
+	// If we were sending a body, we'd need to reset it.
 
 	resp, err := client.Do(req)
 	if err != nil {

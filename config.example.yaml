@@ -7,8 +7,11 @@ global:
   default_interval: "5m"
   monitor_endpoint:
     timeout: "10s" # Optional global default timeout for alert notifications, defaults to 5s.
+    retries: 3 # Global default retries for alert notifications.
     headers:
       Authorization: "Bearer your-common-token"
+  monitor:
+    retries: 3 # global retries for probes, set to 0 to disable.
   notifier:
     rate_limit: "100ms" # Global rate limit between notification pushes. Use "0" to disable.
 
@@ -50,6 +53,7 @@ services:
       accepted_status_codes: "200-299"
     monitor_endpoint:
       timeout: "10s" # Optional service-level timeout for alert notifications.
+      retries: 5 # Optional service-level override for alert notification retries.
       success:
         url: "https://uptime.probixel.test/api/push/success?duration={%duration%}"
         timeout: "15s" # Optional endpoint-specific timeout.
@@ -59,6 +63,7 @@ services:
     targets: ["db1.example.com:5432", "db2.example.com:5432"]
     target_mode: "any"
     timeout: "5s"
+    retries: 2 # Optional service-level override for probe retries.
     monitor_endpoint:
       success:
         url: "https://uptime.probixel.test/api/push/db?status=up"

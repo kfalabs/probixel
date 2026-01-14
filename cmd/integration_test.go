@@ -104,10 +104,12 @@ services:
     type: "http"
     interval: "1s"
     timeout: "500ms"
+    retries: 0
     url: "%[1]s/target"
     http:
       method: "GET"
     monitor_endpoint:
+      retries: 0
       success:
         url: "%[1]s/reload-ok"
 
@@ -115,10 +117,12 @@ services:
     type: "http"
     interval: "1s"
     timeout: "500ms"
+    retries: 0
     url: "%[1]s/target"
     http:
       method: "GET"
     monitor_endpoint:
+      retries: 0
       success:
         url: "%[1]s/alert/success?duration={%%duration%%}"
       failure:
@@ -128,10 +132,12 @@ services:
     type: "ping"
     interval: "1s"
     timeout: "500ms"
+    retries: 0
     targets: ["127.0.0.1"]
     target_mode: "any"
     ping: {}
     monitor_endpoint:
+      retries: 0
       success:
         url: "%[1]s/alert/ping-success?duration={%%duration%%}"
 
@@ -139,10 +145,12 @@ services:
     type: "udp"
     interval: "1s"
     timeout: "500ms"
+    retries: 0
     targets: ["127.0.0.1:%d"]
     target_mode: "any"
     udp: {}
     monitor_endpoint:
+      retries: 0
       success:
         url: "%[1]s/alert/udp-success?duration={%%duration%%}"
 `, ts.URL, udpPort)
@@ -306,6 +314,7 @@ services:
     type: "host"
     interval: "1s"
     monitor_endpoint:
+      retries: 0
       success:
         url: "http://localhost/ok"
 `), 0644)

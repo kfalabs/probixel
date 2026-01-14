@@ -1,6 +1,7 @@
 package notifier
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"probixel/pkg/config"
@@ -12,6 +13,10 @@ import (
 
 func ptr(s string) *string {
 	return &s
+}
+
+func ptrInt(i int) *int {
+	return &i
 }
 
 func TestPusher_Push(t *testing.T) {
@@ -63,7 +68,7 @@ func TestPusher_Push(t *testing.T) {
 	}
 	alertCfg.Headers = map[string]string{"Service-Key": "ServiceVal"}
 
-	err := pusher.Push(res, alertCfg, globalEndpointCfg)
+	err := pusher.Push(context.Background(), res, alertCfg, globalEndpointCfg)
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
@@ -83,7 +88,7 @@ func TestPusher_Push_Failure(t *testing.T) {
 	}
 	res := monitor.Result{Success: true}
 
-	err := pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	err := pusher.Push(context.Background(), res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	if err == nil {
 		t.Error("Expected error from 500 response, got nil")
 	}
@@ -132,7 +137,7 @@ func TestPusher_TemplateVariables(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	err := pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	err := pusher.Push(context.Background(), res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
@@ -172,7 +177,7 @@ func TestPusher_TemplateVariables_Error(t *testing.T) {
 		Message:  "Connection failed",
 	}
 
-	err := pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	err := pusher.Push(context.Background(), res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	if err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
@@ -181,7 +186,7 @@ func TestPusher_TemplateVariables_Error(t *testing.T) {
 func TestPusher_Push_EmptyEndpoint(t *testing.T) {
 	pusher := NewPusher()
 	res := monitor.Result{Success: true}
-	err := pusher.Push(res, config.MonitorEndpointConfig{}, config.GlobalMonitorEndpointConfig{})
+	err := pusher.Push(context.Background(), res, config.MonitorEndpointConfig{}, config.GlobalMonitorEndpointConfig{})
 	if err != nil {
 		t.Errorf("Push should return nil if no endpoint is configured, got %v", err)
 	}
@@ -210,7 +215,7 @@ func TestPusher_Push_HeaderOverride(t *testing.T) {
 		Headers: map[string]string{"X-Test": "global"},
 	}
 
-	err := pusher.Push(res, alertCfg, globalCfg)
+	err := pusher.Push(context.Background(), res, alertCfg, globalCfg)
 	if err != nil {
 		t.Errorf("Push failed: %v", err)
 	}
@@ -225,7 +230,7 @@ func TestPusher_Push_NewRequestError(t *testing.T) {
 		Success: config.EndpointConfig{URL: "http://example.com/\x7f"},
 	}
 
-	err := pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	err := pusher.Push(context.Background(), res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	if err == nil {
 		t.Error("Expected error from invalid URL in NewRequest, got nil")
 	}
@@ -240,7 +245,7 @@ func TestPusher_Push_DoError(t *testing.T) {
 		Success: config.EndpointConfig{URL: "http://127.0.0.1:1"},
 	}
 
-	err := pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	err := pusher.Push(context.Background(), res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	if err == nil {
 		t.Error("Expected error from failing Do(), got nil")
 	}
@@ -271,7 +276,7 @@ func TestPushInsecure(t *testing.T) {
 			},
 		}
 
-		err := pusher.Push(result, endpointCfg, globalCfg)
+		err := pusher.Push(context.Background(), result, endpointCfg, globalCfg)
 		if err == nil {
 			t.Error("Expected error for self-signed certificate with InsecureSkipVerify: false, but got none")
 		}
@@ -285,7 +290,7 @@ func TestPushInsecure(t *testing.T) {
 			},
 		}
 
-		err := pusher.Push(result, endpointCfg, globalCfg)
+		err := pusher.Push(context.Background(), result, endpointCfg, globalCfg)
 		if err != nil {
 			t.Errorf("Expected no error with InsecureSkipVerify: true, but got: %v", err)
 		}
@@ -306,7 +311,7 @@ func TestPushOptionalFailure(t *testing.T) {
 		}
 		globalCfg := config.GlobalMonitorEndpointConfig{}
 
-		err := pusher.Push(result, endpointCfg, globalCfg)
+		err := pusher.Push(context.Background(), result, endpointCfg, globalCfg)
 		if err != nil {
 			t.Errorf("Expected nil error when failure endpoint is nil, got: %v", err)
 		}
@@ -319,7 +324,7 @@ func TestPushOptionalFailure(t *testing.T) {
 		}
 		globalCfg := config.GlobalMonitorEndpointConfig{}
 
-		err := pusher.Push(result, endpointCfg, globalCfg)
+		err := pusher.Push(context.Background(), result, endpointCfg, globalCfg)
 		if err != nil {
 			t.Errorf("Expected nil error when failure URL is empty, got: %v", err)
 		}
@@ -343,7 +348,7 @@ func TestPusher_RateLimit(t *testing.T) {
 	start := time.Now()
 	// Push 3 times
 	for i := 0; i < 3; i++ {
-		_ = pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+		_ = pusher.Push(context.Background(), res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	}
 	duration := time.Since(start)
 
@@ -390,7 +395,7 @@ func TestPusher_DefaultRateLimit(t *testing.T) {
 	start := time.Now()
 	// Push 2 times
 	for i := 0; i < 2; i++ {
-		_ = pusher.Push(res, alertCfg, config.GlobalMonitorEndpointConfig{})
+		_ = pusher.Push(context.Background(), res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	}
 	duration := time.Since(start)
 
@@ -470,7 +475,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 		}
 		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s"}
 
-		err := pusher.Push(res, alertCfg, globalCfg)
+		err := pusher.Push(context.Background(), res, alertCfg, globalCfg)
 		if err == nil {
 			t.Error("Expected timeout error (50ms), got nil")
 		} else if !strings.Contains(err.Error(), "Client.Timeout exceeded") && !strings.Contains(err.Error(), "context deadline exceeded") {
@@ -485,7 +490,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 		}
 		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s"}
 
-		err := pusher.Push(res, alertCfg, globalCfg)
+		err := pusher.Push(context.Background(), res, alertCfg, globalCfg)
 		if err == nil {
 			t.Error("Expected timeout error (50ms service-shared), got nil")
 		} else if !strings.Contains(err.Error(), "Client.Timeout exceeded") && !strings.Contains(err.Error(), "context deadline exceeded") {
@@ -499,7 +504,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 		}
 		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "50ms"}
 
-		err := pusher.Push(res, alertCfg, globalCfg)
+		err := pusher.Push(context.Background(), res, alertCfg, globalCfg)
 		if err == nil {
 			t.Error("Expected timeout error (50ms global), got nil")
 		} else if !strings.Contains(err.Error(), "Client.Timeout exceeded") && !strings.Contains(err.Error(), "context deadline exceeded") {
@@ -513,9 +518,124 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 		}
 		globalCfg := config.GlobalMonitorEndpointConfig{}
 
-		err := pusher.Push(res, alertCfg, globalCfg)
+		err := pusher.Push(context.Background(), res, alertCfg, globalCfg)
 		if err != nil {
 			t.Errorf("Expected success with default 5s timeout, got: %v", err)
 		}
 	})
+}
+
+func TestPusher_Push_Retries(t *testing.T) {
+	attempts := 0
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer testServer.Close()
+
+	pusher := NewPusher()
+	pusher.SetRateLimit(ptr("0")) // Disable rate limit for testing retries
+
+	result := monitor.Result{Success: true}
+	endpointCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: testServer.URL},
+	}
+	globalCfg := config.GlobalMonitorEndpointConfig{
+		Retries: ptrInt(3),
+	}
+
+	err := pusher.Push(context.Background(), result, endpointCfg, globalCfg)
+	if err != nil {
+		t.Errorf("Expected success after retries, got error: %v", err)
+	}
+
+	if attempts != 3 {
+		t.Errorf("Expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestPusher_Push_Retries_Exhausted(t *testing.T) {
+	attempts := 0
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer testServer.Close()
+
+	pusher := NewPusher()
+	pusher.SetRateLimit(ptr("0"))
+
+	result := monitor.Result{Success: true}
+	endpointCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: testServer.URL},
+	}
+	globalCfg := config.GlobalMonitorEndpointConfig{
+		Retries: ptrInt(2),
+	}
+
+	err := pusher.Push(context.Background(), result, endpointCfg, globalCfg)
+	if err == nil {
+		t.Error("Expected error after exhausting retries, got nil")
+	}
+
+	if attempts != 3 { // Initial + 2 retries
+		t.Errorf("Expected 3 attempts (1+2), got %d", attempts)
+	}
+}
+
+func TestPusher_Push_Retries_ServiceOverride(t *testing.T) {
+	attempts := 0
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer testServer.Close()
+
+	pusher := NewPusher()
+	pusher.SetRateLimit(ptr("0"))
+
+	result := monitor.Result{Success: true}
+	retriesOverride := 1
+	endpointCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: testServer.URL},
+		Retries: &retriesOverride,
+	}
+	globalCfg := config.GlobalMonitorEndpointConfig{
+		Retries: ptrInt(5), // Should be ignored
+	}
+
+	_ = pusher.Push(context.Background(), result, endpointCfg, globalCfg)
+
+	if attempts != 2 { // Initial + 1 retry
+		t.Errorf("Expected 2 attempts with service override, got %d", attempts)
+	}
+}
+
+func TestPusher_Push_ContextCancellation(t *testing.T) {
+	// Create a slow test server
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer testServer.Close()
+
+	pusher := NewPusher()
+	res := monitor.Result{Success: true}
+	alertCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: testServer.URL},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := pusher.Push(ctx, res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	if err == nil {
+		t.Error("Expected context cancellation error, got nil")
+	} else if !strings.Contains(err.Error(), "context deadline exceeded") && !strings.Contains(err.Error(), "canceled") {
+		t.Errorf("Expected context error, got: %v", err)
+	}
 }

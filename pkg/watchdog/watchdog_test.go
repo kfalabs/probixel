@@ -31,9 +31,9 @@ global:
 services:
   - name: "Lifecycle Test"
     type: "host"
-    target: "localhost"
     interval: "1s"
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -118,11 +118,13 @@ services:
   - name: "Test UDP Service"
     type: "udp"
     interval: "300ms"
+    retries: 0
     timeout: "100ms"
     targets: ["127.0.0.1:%d"]
     target_mode: "any"
     udp: {}
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s/alert/initial?duration={%%duration%%}"
 `, udpPort, ts.URL)
@@ -161,10 +163,12 @@ services:
     type: "udp"
     interval: "300ms"
     timeout: "100ms"
+    retries: 0
     targets: ["127.0.0.1:%d"]
     target_mode: "any"
     udp: {}
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s/alert/updated?duration={%%duration%%}"
 `, udpPort, ts.URL)
@@ -220,7 +224,9 @@ services:
   - name: "SSH Tunnel Test"
     type: "host"
     interval: "1s"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -273,7 +279,9 @@ services:
   - name: "WG Tunnel Test"
     type: "host"
     interval: "1s"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -318,7 +326,9 @@ services:
   - name: "Reload Test"
     type: "host"
     interval: "100ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -457,7 +467,9 @@ services:
   - name: "Rate Limited Service"
     type: "host"
     interval: "100ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -503,7 +515,9 @@ services:
   - name: "Initial Service"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -535,7 +549,9 @@ services:
   - name: "Modified Service"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -572,6 +588,7 @@ services:
     type: "host"
     interval: "50ms"
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -630,7 +647,9 @@ services:
   - name: "Rapid Test"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -662,7 +681,9 @@ services:
   - name: "Rapid Test %d"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `, i, MockAlertServerURL)
@@ -699,7 +720,9 @@ services:
   - name: "Events Closed Test"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -783,7 +806,9 @@ services:
   - name: "Timer Cancel Test"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -815,7 +840,9 @@ services:
   - name: "Timer Cancel Test Modified"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -857,7 +884,9 @@ services:
   - name: "Timer Reload Test"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -888,7 +917,9 @@ services:
   - name: "Timer Reload Test Modified"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
@@ -928,7 +959,9 @@ services:
   - name: "Timer Invalid Reload Test"
     type: "host"
     interval: "50ms"
+    retries: 0
     monitor_endpoint:
+      retries: 0
       success:
         url: "%s"
 `
