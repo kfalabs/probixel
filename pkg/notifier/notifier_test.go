@@ -643,6 +643,7 @@ func TestPusher_Push_ContextCancellation(t *testing.T) {
 		t.Errorf("Expected context error, got: %v", err)
 	}
 }
+
 func TestPusher_Push_LogVerification(t *testing.T) {
 	// Capture log output
 	var buf bytes.Buffer
