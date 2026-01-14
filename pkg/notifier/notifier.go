@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"probixel/pkg/config"
@@ -46,8 +47,8 @@ func (p *Pusher) SetRateLimit(interval *string) {
 
 // replaceTemplateVars replaces template variables in the URL with actual values
 func replaceTemplateVars(urlStr string, result monitor.Result) string {
-	// Replace duration (in milliseconds)
-	durationMs := result.Duration.Milliseconds()
+	// Replace duration (in milliseconds, rounded to nearest)
+	durationMs := int64(math.Round(float64(result.Duration) / float64(time.Millisecond)))
 	urlStr = strings.ReplaceAll(urlStr, "{%duration%}", strconv.FormatInt(durationMs, 10))
 
 	// Replace error/message
@@ -77,7 +78,7 @@ func replaceTemplateVars(urlStr string, result monitor.Result) string {
 	return urlStr
 }
 
-func (p *Pusher) Push(ctx context.Context, result monitor.Result, endpointCfg config.MonitorEndpointConfig, globalEndpointCfg config.GlobalMonitorEndpointConfig) error {
+func (p *Pusher) Push(ctx context.Context, serviceName string, result monitor.Result, endpointCfg config.MonitorEndpointConfig, globalEndpointCfg config.GlobalMonitorEndpointConfig) error {
 	if result.SkipNotification || result.Pending {
 		return nil
 	}
@@ -162,6 +163,8 @@ func (p *Pusher) Push(ctx context.Context, result monitor.Result, endpointCfg co
 		retries = *endpointCfg.Retries
 	}
 
+	log.Printf("[%s] Sending notifications to -> %s", serviceName, finalURL)
+
 	var lastErr error
 	for attempt := 0; attempt <= retries; attempt++ {
 		if ctx.Err() != nil {
@@ -169,13 +172,19 @@ func (p *Pusher) Push(ctx context.Context, result monitor.Result, endpointCfg co
 		}
 
 		if attempt > 0 {
-			log.Printf("Retrying alert push (attempt %d/%d)...", attempt, retries)
+			log.Printf("[%s] Retrying alert push (attempt %d/%d)...", serviceName, attempt, retries)
 		}
 
+		startPush := time.Now()
 		lastErr = p.doPush(req, endpoint, timeout)
+		pushDur := time.Since(startPush)
+
 		if lastErr == nil {
+			log.Printf("[%s] Alert push successful (%v)", serviceName, pushDur)
 			return nil
 		}
+
+		log.Printf("[%s] Alert push failed: %v", serviceName, lastErr)
 
 		if attempt < retries {
 			// Check context before sleeping or continuing

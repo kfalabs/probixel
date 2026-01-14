@@ -141,7 +141,7 @@ func CheckAndPush(ctx context.Context, probe monitor.Probe, serviceName string, 
 	}
 	log.Printf("[%s] %s (%s) %v", svc.Name, status, result.Message, result.Duration)
 
-	if err := pusher.Push(ctx, result, svc.MonitorEndpoint, cfg.Global.MonitorEndpoint); err != nil {
+	if err := pusher.Push(ctx, svc.Name, result, svc.MonitorEndpoint, cfg.Global.MonitorEndpoint); err != nil {
 		log.Printf("[%s] Failed to push alert: %v", svc.Name, err)
 	}
 }
