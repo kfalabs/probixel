@@ -383,7 +383,7 @@ Verifies UDP port reachability.
     tunnel: "office-vpn" # Optional, tunnel name.
     timeout: "5s" # Optional, defaults to 5s.
     interval: "5m" # Required if the global `default_interval` is not set
-    targets: ["host1", "host2"] #Supports either a **YAML array** or a **comma-separated string**
+    targets: ["127.0.0.1", "test.local"] #Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
       success:
@@ -439,10 +439,9 @@ Monitors a WireGuard VPN tunnel health via handshake timestamps. No external tar
   - name: "Personal VPN Heartbeat"
     type: "wireguard"
     tunnel: "office-vpn" # Use the tunnel defined in the root tunnels block
-    interval: "5m" # Required if the global `default_interval` is not set
-    targets: ["1.1.1.1:53"] # Required if max_age is not set. Can do a ping or a tcp check (if port is specified).
+    interval: "5m" # Required if the global `default_interval` is not set.
     wireguard:
-      max_age: "5m"
+      max_age: "5m" // Trigger failure if Wireguard tunnel handshake is older than this.
     monitor_endpoint:
       success:
         url: "https://uptime.test/api/push/vpn-ok"
@@ -452,11 +451,11 @@ Monitors a WireGuard VPN tunnel health via handshake timestamps. No external tar
   - name: "Manual VPN"
     type: "wireguard"
     wireguard:
-      endpoint: "vpn.example.com:51820"
+      endpoint: "vpn.example.local:51820"
       public_key: "PEER_PUBLIC_KEY"
       private_key: "YOUR_PRIVATE_KEY"
       addresses: "10.0.0.2/32"
-      max_age: "5m"
+      max_age: "5m" // Trigger failure if Wireguard tunnel handshake is older than this.
   ```
 
 
