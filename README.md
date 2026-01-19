@@ -322,7 +322,7 @@ Checks TCP port connectivity.
     tunnel: "office-vpn" # Optional, tunnel name.
     timeout: "5s" # Optional service-level timeout, defaults to 5s.
     interval: "5m" # Required if the global `default_interval` is not set
-    targets: ["host1:port1", "host2:port2"] #Supports either a **YAML array** or a **comma-separated string**
+    targets: ["host1:5000", "host2:5001"] #Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
       success:
