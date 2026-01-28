@@ -286,6 +286,8 @@ The `match_data` block allows you to validate the response body or headers.
 | `contains` | Substring Match | String |
 | `matches` | Regular Expression | Regex |
 
+**Note on Time Comparisons**: If the `value` is a duration (e.g., `10m`), Probixel automatically parses the response field as a timestamp and checks if its age (`now - last_sync`) is within that limit.
+
 If the `certificate_expiry` and `match_data` are both provided, the probe will run both checks and fail if either check fails.
 
 #### TLS Check
@@ -308,8 +310,6 @@ If the `certificate_expiry` and `match_data` are both provided, the probe will r
       failure: # Optional failure endpoint. Useful to send error messages to an alert endpoint.
         url: "https://uptime.probixel.test/api/push/failure?error={%error%}"
   ```
-
-**Note on Time Comparisons**: If the `value` is a duration (e.g., `10m`), Probixel automatically parses the response field as a timestamp and checks if its age (`now - lastSeen`) is within that limit.
 
 #### TCP
 Checks TCP port connectivity.
