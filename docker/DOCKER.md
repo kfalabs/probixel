@@ -91,9 +91,12 @@ data:
       - name: "Internal API"
         type: "http"
         url: "https://internal-api.cluster.local/health"
-        insecure_skip_verify: true
+        http:
+          insecure_skip_verify: true
         monitor_endpoint:
           timeout: "10s"
+          success:
+            url: "https://webhook.site/success"
           failure:
             url: "https://webhook.site/failure"
             timeout: "5s"

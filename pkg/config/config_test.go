@@ -2119,6 +2119,69 @@ func TestValidate_ServiceHost(t *testing.T) {
 	}
 }
 
+func TestValidate_NegativeProbeRetries(t *testing.T) {
+	negOne := -1
+	config := Config{
+		Global: GlobalConfig{DefaultInterval: "1m"},
+		Services: []Service{
+			{
+				Name:    "NegRetries",
+				Type:    "http",
+				URL:     "http://test",
+				Retries: &negOne,
+				MonitorEndpoint: MonitorEndpointConfig{
+					Success: EndpointConfig{URL: "http://ok"},
+				},
+			},
+		},
+	}
+	err := config.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative probe retries")
+	}
+	if !strings.Contains(err.Error(), "retries cannot be negative") {
+		t.Errorf("error %q does not mention retries cannot be negative", err.Error())
+	}
+}
+
+func TestValidate_NegativeGlobalMonitorEndpointRetries(t *testing.T) {
+	negOne := -1
+	config := Config{
+		Global: GlobalConfig{
+			MonitorEndpoint: GlobalMonitorEndpointConfig{
+				Retries: &negOne,
+			},
+		},
+		// No services, so per-service loop doesn't catch it first
+	}
+	err := config.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative global monitor_endpoint retries")
+	}
+	if !strings.Contains(err.Error(), "global monitor_endpoint.retries cannot be negative") {
+		t.Errorf("error %q does not mention global monitor_endpoint.retries", err.Error())
+	}
+}
+
+func TestValidate_NegativeGlobalMonitorRetries(t *testing.T) {
+	negOne := -1
+	config := Config{
+		Global: GlobalConfig{
+			Monitor: MonitorConfig{
+				Retries: &negOne,
+			},
+		},
+		// No services, so per-service loop doesn't interfere
+	}
+	err := config.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative global monitor retries")
+	}
+	if !strings.Contains(err.Error(), "global monitor.retries cannot be negative") {
+		t.Errorf("error %q does not mention global monitor.retries", err.Error())
+	}
+}
+
 func TestValidate_MonitorEndpointTimeouts(t *testing.T) {
 	tests := []struct {
 		name    string

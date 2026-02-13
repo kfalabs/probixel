@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -357,7 +358,7 @@ func TestCheckAndPush_ProbeRetries(t *testing.T) {
 		// Custom Check implementation for this test
 	}
 
-	// We need to override Check for this specific test to track attempts
+	// Override Check for this specific test to track attempts
 	checkFunc := func(ctx context.Context, target string) (monitor.Result, error) {
 		attempts++
 		if attempts < 3 {
@@ -366,8 +367,7 @@ func TestCheckAndPush_ProbeRetries(t *testing.T) {
 		return monitor.Result{Success: true, Message: "OK"}, nil
 	}
 
-	// Since we can't easily override methods in Go without interfaces or function fields,
-	// let's create a specialized mock probe for this test.
+	// Override Check for this specific test to track attempts
 	sp := &statusMockProbe{
 		mockProbe: *p,
 		checkFunc: checkFunc,
@@ -419,4 +419,106 @@ func TestCheckAndPush_ProbeRetries_Exemptions(t *testing.T) {
 	if attempts != 1 {
 		t.Errorf("Expected 1 attempt for exempt host service, got %d", attempts)
 	}
+}
+
+func TestCheckAndPush_ServiceLevelRetries(t *testing.T) {
+	ctx := context.Background()
+	svcName := "svc-retries"
+	svcRetries := 2
+	cfg := &config.Config{
+		Global: config.GlobalConfig{
+			Monitor: config.MonitorConfig{
+				Retries: ptrInt(5), // global retries
+			},
+		},
+		Services: []config.Service{
+			{Name: svcName, Target: "target", Type: "http", Retries: &svcRetries},
+		},
+	}
+	state := NewConfigState(cfg)
+	registry := tunnels.NewRegistry()
+	pusher := notifier.NewPusher()
+
+	attempts := 0
+	p := &statusMockProbe{
+		checkFunc: func(ctx context.Context, target string) (monitor.Result, error) {
+			attempts++
+			return monitor.Result{Success: false, Message: "failed"}, nil
+		},
+	}
+
+	CheckAndPush(ctx, p, svcName, state, registry, pusher)
+
+	// Service-level retries (2) should override global (5): 1 initial + 2 retries = 3 attempts
+	if attempts != 3 {
+		t.Errorf("Expected 3 attempts (1+2 retries), got %d", attempts)
+	}
+}
+
+func TestCheckAndPush_ProbeRetriesWithError(t *testing.T) {
+	ctx := context.Background()
+	svcName := "error-retry-svc"
+	cfg := &config.Config{
+		Global: config.GlobalConfig{
+			Monitor: config.MonitorConfig{
+				Retries: ptrInt(2),
+			},
+		},
+		Services: []config.Service{
+			{Name: svcName, Target: "target", Type: "http"},
+		},
+	}
+	state := NewConfigState(cfg)
+	registry := tunnels.NewRegistry()
+	pusher := notifier.NewPusher()
+
+	attempts := 0
+	p := &statusMockProbe{
+		checkFunc: func(ctx context.Context, target string) (monitor.Result, error) {
+			attempts++
+			return monitor.Result{}, fmt.Errorf("internal probe error")
+		},
+	}
+
+	CheckAndPush(ctx, p, svcName, state, registry, pusher)
+
+	// Should retry on error: 1 initial + 2 retries = 3 attempts
+	if attempts != 3 {
+		t.Errorf("Expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestCheckAndPush_PusherError(t *testing.T) {
+	ctx := context.Background()
+	svcName := "pusher-error-svc"
+	cfg := &config.Config{
+		Services: []config.Service{
+			{
+				Name:   svcName,
+				Target: "target",
+				Type:   "http",
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					// Point to a non-existent endpoint to trigger push error
+					Success: config.EndpointConfig{
+						URL: "http://127.0.0.1:1/nonexistent",
+					},
+					Retries: ptrInt(0),
+				},
+			},
+		},
+	}
+	state := NewConfigState(cfg)
+	registry := tunnels.NewRegistry()
+	pusher := notifier.NewPusher()
+
+	p := &mockProbe{
+		name: svcName,
+		checkResult: monitor.Result{
+			Success: true,
+			Message: "OK",
+		},
+	}
+
+	// Should not panic when pusher returns an error
+	CheckAndPush(ctx, p, svcName, state, registry, pusher)
 }

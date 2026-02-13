@@ -413,20 +413,6 @@ func TestPingProbe_RemoteSSH(t *testing.T) {
 	defer tun.Stop()
 
 	// 3. Setup Probe
-	// We need to trigger the "unsupported protocol" error in pingBuiltin to force fallback to SSH
-	// or mock DialContext to fail specifically for this test.
-	// Actually, pingProbe logic is:
-	// if sshTunnel -> pingRemoteSSH
-	// wait, checking logic:
-	/*
-		if err != nil && strings.Contains(err.Error(), "unsupported protocol") {
-			if p.tunnel != nil { // ... return p.pingRemoteSSH }
-		}
-	*/
-	// We need pingBuiltin to fail with "unsupported protocol"
-	// To do that, we can use a DialContext that returns that error or just rely on default behavior?
-	// Default pingBuiltin uses "ping4" network.
-
 	ctx := context.Background()
 
 	probe := &PingProbe{
@@ -648,6 +634,58 @@ func TestPingProbe_RemoteSSH_SessionError(t *testing.T) {
 	}
 	if !strings.Contains(res.Message, "session") && !strings.Contains(res.Message, "SSH") {
 		t.Errorf("Expected session-related error message, got %s", res.Message)
+	}
+}
+
+func TestPingProbe_Builtin_WithDeadline(t *testing.T) {
+	// Test the ctx.Deadline() branch in pingBuiltin
+	probe := &PingProbe{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return &mockPingConn{}, nil
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := probe.Check(ctx, "8.8.8.8")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success, got failure: %s", res.Message)
+	}
+}
+
+// mockBadICMPConn returns garbage data that can't be parsed as ICMP
+type mockBadICMPConn struct {
+	net.Conn
+}
+
+func (m *mockBadICMPConn) Write(b []byte) (int, error) { return len(b), nil }
+func (m *mockBadICMPConn) Read(b []byte) (int, error) {
+	// Return only 1 byte - too short for valid ICMP
+	b[0] = 0xFF
+	return 1, nil
+}
+func (m *mockBadICMPConn) Close() error                       { return nil }
+func (m *mockBadICMPConn) SetDeadline(t time.Time) error      { return nil }
+func (m *mockBadICMPConn) SetReadDeadline(t time.Time) error  { return nil }
+func (m *mockBadICMPConn) SetWriteDeadline(t time.Time) error { return nil }
+
+func TestPingProbe_Builtin_ICMPParseError(t *testing.T) {
+	probe := &PingProbe{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return &mockBadICMPConn{}, nil
+		},
+	}
+	res, err := probe.Check(context.Background(), "8.8.8.8")
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success (parse fail fallback), got failure: %s", res.Message)
+	}
+	if res.Message != "OK (parse failed)" {
+		t.Errorf("Expected 'OK (parse failed)', got %s", res.Message)
 	}
 }
 

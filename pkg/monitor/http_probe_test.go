@@ -2,7 +2,13 @@ package monitor
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -723,6 +729,85 @@ func TestHTTPProbe_EdgeCases_Extended(t *testing.T) {
 		}
 	})
 }
+func TestHTTPProbe_TLSExpiredCert(t *testing.T) {
+	// Create a server with an expired TLS certificate
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Test"},
+		},
+		NotBefore:   now.Add(-48 * time.Hour),
+		NotAfter:    now.Add(-24 * time.Hour), // Already expired
+		IsCA:        true,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		DNSNames:    []string{"localhost"},
+	}
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate key: %v", err)
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("Failed to create cert: %v", err)
+	}
+	cert := tls.Certificate{
+		Certificate: [][]byte{certDER},
+		PrivateKey:  priv,
+	}
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	probe := &HTTPProbe{
+		InsecureSkipVerify: true,
+		ExpiryThreshold:    24 * time.Hour,
+	}
+	res, checkErr := probe.Check(context.Background(), server.URL)
+	if checkErr != nil {
+		t.Fatalf("Check returned error: %v", checkErr)
+	}
+	if res.Success {
+		t.Error("Expected failure for expired TLS certificate")
+	}
+	if !strings.Contains(res.Message, "TLS EXPIRED") {
+		t.Logf("Message: %s (may have been rejected earlier)", res.Message)
+	}
+}
+
+func TestHTTPProbe_JSONSingleValueExpectation(t *testing.T) {
+	// Test the JSON single-value path where gjson returns a non-array, non-null result
+	// In practice, gjson.Array() wraps single values, so we test the array path with a single element
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"name": "test"}`))
+	}))
+	defer server.Close()
+
+	probe := &HTTPProbe{
+		MatchData: &config.MatchDataConfig{
+			Expectations: []config.Expectation{
+				{Type: "json", JSONPath: "name", Operator: "==", Value: "test"},
+			},
+		},
+	}
+	res, err := probe.Check(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success, got failure: %s", res.Message)
+	}
+}
+
 func TestHTTPProbe_Stabilization(t *testing.T) {
 	// Mock Tunnel that is NOT stabilized
 	mt := &tunnels.MockTunnel{

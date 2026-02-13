@@ -67,6 +67,7 @@ func (m *MockTunnel) ReportFailure() {
 
 func (m *MockTunnel) ReportSuccess() {
 	// No-op for mock
+	_ = m
 }
 
 func (m *MockTunnel) IsStabilized() bool {

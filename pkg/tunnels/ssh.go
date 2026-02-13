@@ -133,6 +133,7 @@ func (t *SSHTunnel) ReportFailure() {
 
 func (t *SSHTunnel) ReportSuccess() {
 	// SSH tunnels don't need restart prevention logic
+	_ = t
 }
 
 func (t *SSHTunnel) Config() *config.SSHConfig { return t.cfg }

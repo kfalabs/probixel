@@ -300,7 +300,6 @@ func TestSSHProbe_Coverage_Errors(t *testing.T) {
 	})
 
 	// 2. NewClientConn Error (Handshake fail)
-	// We need a dial that succeeds but returns a connection that fails handshake immediately
 	t.Run("Handshake_Error", func(t *testing.T) {
 		p := &SSHProbe{
 			Config: &config.SSHConfig{

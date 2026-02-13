@@ -1,6 +1,7 @@
 package health
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,6 +83,33 @@ func TestCheckHealth_InvalidPID(t *testing.T) {
 
 	cmd := exec.Command(os.Args[0], "-test.run=TestCheckHealth_InvalidPID")
 	cmd.Env = append(os.Environ(), "TEST_CHECK_HEALTH_INVALID=1")
+	err := cmd.Run()
+	if e, ok := err.(*exec.ExitError); ok && !e.Success() {
+		// Expected exit status 1
+		return
+	}
+	t.Fatalf("process ran with err %v, want exit status 1", err)
+}
+
+func TestCheckHealth_FindProcessError(t *testing.T) {
+	if os.Getenv("TEST_CHECK_HEALTH_FINDPROCESS") == "1" {
+		// Override findProcess to return error
+		findProcess = func(pid int) (*os.Process, error) {
+			return nil, fmt.Errorf("mock process lookup error")
+		}
+		defer func() { findProcess = os.FindProcess }()
+
+		tmpDir := os.TempDir()
+		pidFile := filepath.Join(tmpDir, "findprocess.pid")
+		_ = os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0600)
+		defer os.Remove(pidFile)
+
+		CheckHealth(pidFile)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCheckHealth_FindProcessError")
+	cmd.Env = append(os.Environ(), "TEST_CHECK_HEALTH_FINDPROCESS=1")
 	err := cmd.Run()
 	if e, ok := err.(*exec.ExitError); ok && !e.Success() {
 		// Expected exit status 1

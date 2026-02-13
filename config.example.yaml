@@ -70,10 +70,11 @@ services:
 
   - name: "Public DNS"
     type: "dns"
+    targets: ["8.8.8.8:53", "1.1.1.1:53"] # Required: nameserver addresses to query
     interval: "1m"
     timeout: "5s"
     dns:
-      domain: "google.com"
+      domain: "google.com" # Optional, defaults to "google.com"
     monitor_endpoint:
       success:
         url: "https://uptime.probixel.test/api/push/dns?status=up"

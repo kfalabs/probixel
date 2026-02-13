@@ -15,6 +15,8 @@ import (
 
 	"probixel/pkg/agent"
 	"probixel/pkg/config"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestWatchdog_Lifecycle(t *testing.T) {
@@ -991,6 +993,466 @@ services:
 
 	// Wait for the timer to trigger reload (100ms delay + buffer)
 	time.Sleep(400 * time.Millisecond)
+
+	wd.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watchdog did not stop")
+	}
+}
+
+func TestWatchdog_UnknownTunnelType(t *testing.T) {
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "100ms"},
+		Tunnels: map[string]config.TunnelConfig{
+			"unknown-tun": {Type: "unknown-type"},
+		},
+		Services: []config.Service{
+			{
+				Name:     "Test Service",
+				Type:     "host",
+				Interval: "100ms",
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					Success: config.EndpointConfig{URL: MockAlertServerURL},
+				},
+			},
+		},
+	}
+
+	wd := NewWatchdog("dummy.yaml", cfg)
+	done := make(chan struct{})
+	go func() {
+		wd.Start(context.Background())
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	wd.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watchdog did not stop")
+	}
+}
+
+func TestWatchdog_TunnelInitFailure(t *testing.T) {
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "100ms"},
+		Tunnels: map[string]config.TunnelConfig{
+			"wg-fail": {
+				Type: "wireguard",
+				Wireguard: &config.WireguardConfig{
+					Addresses:  "invalid-addr",
+					PrivateKey: "wOEI9rqqbDwnN8/Bpp22sVz48T71vJ4fYmFWujulwUU=",
+					PublicKey:  "wAUaJMhAq3NFutLHIdF8AN0B5WG8RndfQKLPTEDHal0=",
+					Endpoint:   "1.2.3.4:51820",
+				},
+			},
+		},
+		Services: []config.Service{
+			{
+				Name:     "Test Service",
+				Type:     "host",
+				Interval: "100ms",
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					Success: config.EndpointConfig{URL: MockAlertServerURL},
+				},
+			},
+		},
+	}
+
+	wd := NewWatchdog("dummy.yaml", cfg)
+	done := make(chan struct{})
+	go func() {
+		wd.Start(context.Background())
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	wd.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watchdog did not stop")
+	}
+}
+
+func TestWatchdog_WireguardTunnelWithNilConfig(t *testing.T) {
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "100ms"},
+		Tunnels: map[string]config.TunnelConfig{
+			"wg-nil": {Type: "wireguard", Wireguard: nil},
+		},
+		Services: []config.Service{
+			{
+				Name:     "Test Service",
+				Type:     "host",
+				Interval: "100ms",
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					Success: config.EndpointConfig{URL: MockAlertServerURL},
+				},
+			},
+		},
+	}
+
+	wd := NewWatchdog("dummy.yaml", cfg)
+	done := make(chan struct{})
+	go func() {
+		wd.Start(context.Background())
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	wd.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watchdog did not stop")
+	}
+}
+
+func TestWatchdog_SSHTunnelWithNilConfig(t *testing.T) {
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "100ms"},
+		Tunnels: map[string]config.TunnelConfig{
+			"ssh-nil": {Type: "ssh", Target: "localhost", SSH: nil},
+		},
+		Services: []config.Service{
+			{
+				Name:     "Test Service",
+				Type:     "host",
+				Interval: "100ms",
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					Success: config.EndpointConfig{URL: MockAlertServerURL},
+				},
+			},
+		},
+	}
+
+	wd := NewWatchdog("dummy.yaml", cfg)
+	done := make(chan struct{})
+	go func() {
+		wd.Start(context.Background())
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	wd.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watchdog did not stop")
+	}
+}
+
+func TestWatchdog_WatcherClose(t *testing.T) {
+	// Test the !ok paths when watcher channels close
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "100ms"},
+		Services: []config.Service{
+			{
+				Name:     "Watcher Close Test",
+				Type:     "host",
+				Interval: "100ms",
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					Success: config.EndpointConfig{URL: MockAlertServerURL},
+				},
+			},
+		},
+	}
+
+	wd := NewWatchdog("dummy.yaml", cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Manually create a watcher and close it to trigger !ok paths
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("Failed to create watcher: %v", err)
+	}
+
+	wd.wg.Add(1)
+	go wd.watchConfigFile(ctx, watcher)
+
+	// Close watcher to trigger channel close -> !ok return
+	time.Sleep(50 * time.Millisecond)
+	_ = watcher.Close()
+
+	// Wait for goroutine to exit
+	done := make(chan struct{})
+	go func() {
+		wd.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchConfigFile did not return after watcher close")
+	}
+}
+
+func TestWatchdog_StartingWindowDelay(t *testing.T) {
+	// Test the StartingWindow > 0 branch
+	oldWindow := StartingWindow
+	StartingWindow = 1 * time.Millisecond
+	defer func() { StartingWindow = oldWindow }()
+
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "100ms"},
+		Services: []config.Service{
+			{
+				Name:     "Starting Window Test",
+				Type:     "host",
+				Interval: "100ms",
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					Success: config.EndpointConfig{URL: MockAlertServerURL},
+				},
+			},
+		},
+	}
+
+	wd := NewWatchdog("dummy.yaml", cfg)
+	done := make(chan struct{})
+	go func() {
+		wd.Start(context.Background())
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	wd.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watchdog did not stop")
+	}
+}
+
+func TestWatchLoop_WatcherError(t *testing.T) {
+	cfg := &config.Config{}
+	wd := NewWatchdog("dummy.yaml", cfg)
+
+	errChan := make(chan error, 1)
+	eventChan := make(chan fsnotify.Event)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Send an error before starting the loop - it will be picked up immediately
+	errChan <- fmt.Errorf("test watcher error")
+
+	done := make(chan struct{})
+	go func() {
+		wd.watchLoop(ctx, eventChan, errChan)
+		close(done)
+	}()
+
+	// Wait for the error to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel to exit the loop
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchLoop did not return")
+	}
+}
+
+func TestWatchLoop_ErrorsChanClosed(t *testing.T) {
+	cfg := &config.Config{}
+	wd := NewWatchdog("dummy.yaml", cfg)
+
+	errChan := make(chan error)
+	eventChan := make(chan fsnotify.Event)
+
+	done := make(chan struct{})
+	go func() {
+		wd.watchLoop(context.Background(), eventChan, errChan)
+		close(done)
+	}()
+
+	// Give the goroutine time to enter the select
+	time.Sleep(50 * time.Millisecond)
+
+	// Close the errors channel to trigger the !ok return path
+	close(errChan)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchLoop did not return after errors channel closed")
+	}
+}
+
+func TestWatchdog_ReloadChanFullDefault(t *testing.T) {
+	// Test the default case on reloadChan (line 200) when the channel is already full.
+	oldDelay := ReloadDelay
+	ReloadDelay = 50 * time.Millisecond
+	defer func() { ReloadDelay = oldDelay }()
+
+	configFile, err := os.CreateTemp("", "reload_full_test_*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := configFile.Name()
+	defer func() { _ = os.Remove(configPath) }()
+
+	cfgStr := `
+global:
+  default_interval: "50ms"
+services:
+  - name: "Reload Full Test"
+    type: "host"
+    interval: "50ms"
+    retries: 0
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "%s"
+`
+	if _, err := fmt.Fprintf(configFile, cfgStr, MockAlertServerURL); err != nil {
+		t.Fatal(err)
+	}
+	_ = configFile.Close()
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	wd := NewWatchdog(configPath, cfg)
+
+	// Pre-fill the reloadChan so the default case is hit when watchConfigFile tries to send
+	wd.reloadChan <- struct{}{}
+
+	// Start watchConfigFile directly (not via Start, to avoid run() draining reloadChan)
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Add(configPath); err != nil {
+		_ = watcher.Close()
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wd.wg.Add(1)
+	go wd.watchConfigFile(ctx, watcher)
+
+	// Give watchConfigFile time to enter its select loop
+	time.Sleep(50 * time.Millisecond)
+
+	// Modify the file to trigger a write event -> timer starts
+	newCfgStr := `
+global:
+  default_interval: "50ms"
+services:
+  - name: "Reload Full Test Modified"
+    type: "host"
+    interval: "50ms"
+    retries: 0
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "%s"
+`
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(newCfgStr, MockAlertServerURL)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for timer to fire (50ms delay + buffer) and hit the default case
+	time.Sleep(200 * time.Millisecond)
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		wd.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchConfigFile did not return")
+	}
+}
+
+func TestWatchdog_TimerReloadValidWithRestart(t *testing.T) {
+	oldDelay := ReloadDelay
+	ReloadDelay = 50 * time.Millisecond
+	defer func() { ReloadDelay = oldDelay }()
+
+	configFile, err := os.CreateTemp("", "reload_restart_test_*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := configFile.Name()
+	defer func() { _ = os.Remove(configPath) }()
+
+	cfgStr := `
+global:
+  default_interval: "50ms"
+  notifier:
+    rate_limit: "50ms"
+services:
+  - name: "Reload Restart Test"
+    type: "host"
+    interval: "50ms"
+    retries: 0
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "%s"
+`
+	if _, err := fmt.Fprintf(configFile, cfgStr, MockAlertServerURL); err != nil {
+		t.Fatal(err)
+	}
+	_ = configFile.Close()
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	wd := NewWatchdog(configPath, cfg)
+	done := make(chan struct{})
+	go func() {
+		wd.Start(context.Background())
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	newCfgStr := `
+global:
+  default_interval: "50ms"
+  notifier:
+    rate_limit: "100ms"
+services:
+  - name: "Reload Restart Test Modified"
+    type: "host"
+    interval: "50ms"
+    retries: 0
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "%s"
+`
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(newCfgStr, MockAlertServerURL)), 0644); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+
+	// Wait for timer to fire and reload to complete
+	time.Sleep(300 * time.Millisecond)
 
 	wd.Stop()
 

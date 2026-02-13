@@ -160,7 +160,10 @@ func (w *Watchdog) run(ctx context.Context) {
 func (w *Watchdog) watchConfigFile(ctx context.Context, watcher *fsnotify.Watcher) {
 	defer w.wg.Done()
 	defer func() { _ = watcher.Close() }()
+	w.watchLoop(ctx, watcher.Events, watcher.Errors)
+}
 
+func (w *Watchdog) watchLoop(ctx context.Context, events <-chan fsnotify.Event, errors <-chan error) {
 	var (
 		timer     *time.Timer
 		timerChan <-chan time.Time
@@ -173,7 +176,7 @@ func (w *Watchdog) watchConfigFile(ctx context.Context, watcher *fsnotify.Watche
 				timer.Stop()
 			}
 			return
-		case event, ok := <-watcher.Events:
+		case event, ok := <-events:
 			if !ok {
 				return
 			}
@@ -200,7 +203,7 @@ func (w *Watchdog) watchConfigFile(ctx context.Context, watcher *fsnotify.Watche
 				default:
 				}
 			}
-		case err, ok := <-watcher.Errors:
+		case err, ok := <-errors:
 			if !ok {
 				return
 			}

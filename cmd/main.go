@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -13,6 +14,46 @@ import (
 	"probixel/pkg/health"
 	"probixel/pkg/watchdog"
 )
+
+func run(ctx context.Context, configPath, pidFile string, delaySeconds int) error {
+	if err := health.WritePIDFile(pidFile); err != nil {
+		return fmt.Errorf("failed to write PID file: %v", err)
+	}
+	defer func() { _ = os.Remove(pidFile) }()
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	watchdog.StartingWindow = time.Duration(delaySeconds) * time.Second
+
+	wd := watchdog.NewWatchdog(configPath, cfg)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+
+	go func() {
+		select {
+		case <-sigChan:
+			log.Println("Received shutdown signal, stopping agents...")
+			wd.Stop()
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	wd.Start(ctx)
+
+	<-ctx.Done()
+	log.Println("Agent stopped.")
+
+	return nil
+}
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
@@ -25,37 +66,7 @@ func main() {
 		health.CheckHealth(*pidFile)
 	}
 
-	// Write PID file
-	if err := health.WritePIDFile(*pidFile); err != nil {
-		log.Fatalf("Failed to write PID file: %v", err)
+	if err := run(context.Background(), *configPath, *pidFile, *delaySeconds); err != nil {
+		log.Fatal(err)
 	}
-	defer func() { _ = os.Remove(*pidFile) }()
-
-	cfg, err := config.LoadConfig(*configPath)
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Set the starting window from the delay flag
-	watchdog.StartingWindow = time.Duration(*delaySeconds) * time.Second
-
-	wd := watchdog.NewWatchdog(*configPath, cfg)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle signals for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		log.Println("Received shutdown signal, stopping agents...")
-		wd.Stop()
-		cancel()
-	}()
-
-	wd.Start(ctx)
-
-	<-ctx.Done()
-	log.Println("Agent stopped.")
 }
