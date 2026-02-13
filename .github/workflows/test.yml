@@ -67,6 +67,7 @@ jobs:
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       uses: peter-evans/create-pull-request@v8
       with:
+        base: main
         branch: automation/coverage-badge
         title: "chore: update coverage badge"
         body: "Automated update of coverage badge."
