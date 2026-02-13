@@ -118,12 +118,11 @@ func CheckAndPush(ctx context.Context, probe monitor.Probe, serviceName string, 
 			// Failed but have retries left
 			continue
 		}
-		// If we reach here, it's either success, pending, or we're out of retries
+		// Either success, pending, or out of retries
 		break
 	}
 
 	if lastErr != nil && result.Message == "" {
-		// Ensure we have a message if we failed with an error
 		result.Message = lastErr.Error()
 	}
 

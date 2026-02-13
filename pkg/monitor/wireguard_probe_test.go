@@ -117,6 +117,22 @@ func TestWireguardProbe_Initialize_EphemeralTunnel(t *testing.T) {
 	}
 }
 
+func TestWireguardProbe_Initialize_EphemeralTunnelError(t *testing.T) {
+	p := &WireguardProbe{
+		Config: &config.WireguardConfig{
+			Addresses: "invalid-address", // Will cause Initialize to fail
+		},
+	}
+
+	err := p.Initialize()
+	if err == nil {
+		t.Fatal("expected error for invalid address in ephemeral tunnel")
+	}
+	if !testingContains(err.Error(), "invalid address") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestWireguardProbe_Check_InvalidMaxAge(t *testing.T) {
 	p := &WireguardProbe{
 		Config: &config.WireguardConfig{
@@ -453,12 +469,6 @@ func (m *mockWGDevice) Wait() chan error {
 	return make(chan error)
 }
 
-func TestWireguardProbe_SetTimeout(t *testing.T) {
-	p := &WireguardProbe{}
-	p.SetTimeout(10 * time.Second)
-	// SetTimeout is a no-op for WireguardProbe, but we test it for coverage
-}
-
 func testingContains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
@@ -577,6 +587,81 @@ func TestWireguardProbe_Check_ZeroHandshakeWithTunnel(t *testing.T) {
 	}
 	if !failureCalled {
 		t.Error("expected ReportFailure to be called")
+	}
+}
+
+func TestWireguardProbe_SetTimeout(t *testing.T) {
+	p := &WireguardProbe{}
+	p.SetTimeout(10 * time.Second)
+	// No-op, just ensure no panic
+}
+
+func TestWireguardProbe_Check_MaxAgeZero(t *testing.T) {
+	// When Config has empty MaxAge and tunnel has no Config(), maxAge stays 0
+	mock := &mockWGDevice{
+		uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", time.Now().Unix()),
+	}
+	tunnel := &tunnels.MockTunnel{
+		IsStabilizedResult: true,
+	}
+
+	p := &WireguardProbe{
+		tunnel:   tunnel,
+		dev:      mock,
+		initTime: time.Now().Add(-1 * time.Hour),
+	}
+
+	res, err := p.Check(context.Background(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Success {
+		t.Error("expected failure for maxAge == 0")
+	}
+	if !testingContains(res.Message, "max_age is required") {
+		t.Errorf("unexpected message: %s", res.Message)
+	}
+}
+
+func TestWireguardProbe_Check_ParseErrorWithTunnel(t *testing.T) {
+	failureCalled := false
+	mock := &mockWGDevice{
+		uapi: "last_handshake_time_sec=invalid\n",
+	}
+
+	tunnel := &tunnels.MockTunnel{
+		IsStabilizedResult: true,
+		ReportFailureFunc:  func() { failureCalled = true },
+	}
+
+	p := &WireguardProbe{
+		Config: &config.WireguardConfig{
+			MaxAge: "5m",
+		},
+		tunnel:   tunnel,
+		dev:      mock,
+		initTime: time.Now().Add(-1 * time.Hour),
+	}
+
+	res, err := p.Check(context.Background(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Success {
+		t.Error("expected failure for parse error")
+	}
+	if !failureCalled {
+		t.Error("expected ReportFailure to be called on parse error with tunnel")
+	}
+}
+
+func TestWireguardProbe_SetTunnel_NonWireguard(t *testing.T) {
+	p := &WireguardProbe{}
+	// MockTunnel is not *WireguardTunnel, so SetTunnel should not set it
+	mock := &tunnels.MockTunnel{}
+	p.SetTunnel(mock)
+	if p.tunnel != nil {
+		t.Error("expected tunnel to remain nil for non-WireguardTunnel")
 	}
 }
 

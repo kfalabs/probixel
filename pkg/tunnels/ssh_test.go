@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"net"
 	"probixel/pkg/config"
+	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -409,5 +411,73 @@ func TestSSHTunnel_ReportFailure_WithClient(t *testing.T) {
 	// 5. Verify client is now nil
 	if tun.client != nil {
 		t.Error("expected client to be nil after ReportFailure")
+	}
+}
+
+func TestSSHTunnel_ReportSuccess_Isolated(t *testing.T) {
+	tun := NewSSHTunnel("rs-test", "localhost", &config.SSHConfig{User: "test"})
+	// ReportSuccess is a no-op, just verify it doesn't panic
+	tun.ReportSuccess()
+}
+
+func TestSSHTunnel_GetClient_InvalidPrivateKey(t *testing.T) {
+	tun := NewSSHTunnel("pk-invalid", "127.0.0.1:22", &config.SSHConfig{
+		User:       "test",
+		PrivateKey: "not-a-valid-private-key",
+	})
+
+	_, err := tun.GetClient(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid private key")
+	}
+	if !strings.Contains(err.Error(), "failed to parse private key") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSSHTunnel_GetClient_DefaultPort(t *testing.T) {
+	// Port 0 should default to 22, and target without ":"
+	tun := NewSSHTunnel("port-default", "192.0.2.1", &config.SSHConfig{
+		User:     "test",
+		Password: "pass",
+		Port:     0, // should default to 22
+	})
+
+	// This will fail to connect (unreachable IP) but exercises the port logic
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := tun.GetClient(ctx)
+	if err == nil {
+		t.Fatal("expected connection error to unreachable host")
+	}
+}
+
+func TestSSHTunnel_GetClient_TargetWithPort(t *testing.T) {
+	// Target already contains ":", should not append port
+	tun := NewSSHTunnel("port-explicit", "192.0.2.1:2222", &config.SSHConfig{
+		User:     "test",
+		Password: "pass",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := tun.GetClient(ctx)
+	if err == nil {
+		t.Fatal("expected connection error")
+	}
+}
+
+func TestSSHTunnel_GetClient_CustomPort(t *testing.T) {
+	tun := NewSSHTunnel("port-custom", "192.0.2.1", &config.SSHConfig{
+		User:     "test",
+		Password: "pass",
+		Port:     2222,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := tun.GetClient(ctx)
+	if err == nil {
+		t.Fatal("expected connection error")
 	}
 }

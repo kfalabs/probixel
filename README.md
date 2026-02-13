@@ -76,7 +76,7 @@ For detailed Docker usage, configuration options, and deployment examples, see [
 
 The agent automatically watches the configuration file for changes and reloads it. When you modify the config file:
 
-- Configuration is reloaded automatically
+- A **10-second debounce delay** is applied after detecting a change, preventing rapid reloads during multi-edit saves
 - **All monitoring services are restarted** to ensure that changes to intervals and other settings take effect immediately
 - Invalid config changes are logged and ignored (old config remains active)
 
@@ -355,9 +355,9 @@ Verifies UDP port reachability.
   ```
 
 #### DNS
-- **Fields**: `targets` (required), `target_mode` (optional), `timeout` (optional), `dns:` block (optional)
-- **DNS Block**: `domain` (optional)
-- **Format**: `nameserver:port` (port defaults to 53)
+- **Fields**: `targets` (required — nameserver addresses to query), `target_mode` (optional), `timeout` (optional), `dns:` block (optional)
+- **DNS Block**: `domain` (optional, defaults to `google.com` — the domain to resolve against the nameservers)
+- **Format**: `host:port` (port defaults to `53` if omitted). Resolves via UDP first, retries with TCP on failure.
 - **Example**:
   ```yaml
   - name: "DNS Servers"
@@ -377,6 +377,10 @@ Verifies UDP port reachability.
 
 #### Ping
 - **Fields**: `targets` (required), `target_mode` (optional), `timeout` (optional)
+- **Execution strategies** (automatic fallback):
+  1. **Built-in ICMP** — Used when routed through a tunnel with `DialContext` support
+  2. **Remote SSH ping** — Falls back to executing `ping` on the remote host when ICMP is unsupported (e.g., SSH tunnels)
+  3. **System `ping` executable** — Default when no tunnel is set (cross-platform: macOS, Linux, Windows)
 - **Example**:
   ```yaml
   - name: "Ping Targets"
@@ -442,7 +446,7 @@ Monitors a WireGuard VPN tunnel health via handshake timestamps. No external tar
     tunnel: "office-vpn" # Use the tunnel defined in the root tunnels block
     interval: "5m" # Required if the global `default_interval` is not set.
     wireguard:
-      max_age: "5m" // Trigger failure if Wireguard tunnel handshake is older than this.
+      max_age: "5m" # Trigger failure if WireGuard tunnel handshake is older than this.
     monitor_endpoint:
       success:
         url: "https://uptime.test/api/push/vpn-ok"
@@ -456,7 +460,7 @@ Monitors a WireGuard VPN tunnel health via handshake timestamps. No external tar
       public_key: "PEER_PUBLIC_KEY"
       private_key: "YOUR_PRIVATE_KEY"
       addresses: "10.0.0.2/32"
-      max_age: "5m" // Trigger failure if Wireguard tunnel handshake is older than this.
+      max_age: "5m" # Trigger failure if WireGuard tunnel handshake is older than this.
   ```
 
 
@@ -471,7 +475,7 @@ Monitors SSH connectivity and optionally performs authentication.
 - **SSH Block**: `user` (required if `auth_required` is true), `password` (optional), `private_key` (optional), `auth_required` (optional, defaults to true), `port` (optional, defaults to 22), `timeout` (optional, defaults to 5s)
 
 > [!TIP]
-> **SSH Connection Caching**: Root `ssh` tunnels automatically cache the underlying client connection. If the connection is interrupted, the agent transparently re-establishes it during the next probe cycle.
+> **SSH Connection Caching**: Root `ssh` tunnels cache the underlying client connection. Before each reuse, a keepalive check is performed — if the connection is dead, the agent automatically closes and reconnects during the next probe cycle. Reporting a failure also forces a reconnect.
 
 - **Example (using root tunnel)**:
   ```yaml
@@ -622,11 +626,33 @@ This allows you to set a conservative global timeout while allowing specific slo
 
 ## Development
 
-### Running Tests
+### Makefile Targets
+
+The `Makefile` provides convenient shortcuts for common development tasks:
+
+| Target | Description |
+|---|---|
+| `make test` | Run all Go tests |
+| `make lint` | Run `golangci-lint` |
+| `make build-native` | Build native binary |
+| `make build` | Build Docker image |
+| `make build-arm64` | Build for ARM64 |
+| `make build-multi` | Multi-arch build (amd64, arm64, arm/v7) |
+| `make run` | Run container with Docker CLI |
+| `make up` / `make down` | Docker Compose lifecycle |
+| `make logs` | View container logs |
+| `make restart` / `make stop` | Container management |
+| `make shell` / `make stats` | Debug utilities |
+| `make clean` | Remove unused Docker images |
+
+### Running Tests Manually
 
 ```bash
 # Run all tests
 go test -v ./...
+
+# Run with race detection (as CI does)
+go test -race -count=3 ./...
 
 # Run specific package tests
 go test -v ./pkg/monitor/...
@@ -639,25 +665,41 @@ go test -v ./cmd/...
 
 ```
 .
-├── cmd/                # Main application entry point and integration tests
+├── cmd/                    # Entry point (main.go) and integration tests
 ├── pkg/
-│   ├── agent/          # Probe factory and monitoring logic
-│   ├── config/         # Configuration loading and parsing
-│   ├── health/         # PID management and health checks
-│   ├── monitor/        # Individual probe implementations
-│   ├── notifier/       # Alert notification logic
-│   ├── tunnels/        # Network transport (VPN, SSH)
-│   └── watchdog/       # Config reloading and component lifecycle
-└── config.example.yaml # Example configuration
+│   ├── agent/              # Service monitor loop, probe factory, thread-safe config state
+│   ├── config/             # YAML config parsing, validation, duration helpers
+│   ├── health/             # PID file management and health checks
+│   ├── monitor/            # 10 probe implementations (HTTP, TCP, UDP, DNS, Ping, Host, Docker, WireGuard, TLS, SSH)
+│   ├── notifier/           # Alert push logic with rate limiting and template variables
+│   ├── tunnels/            # WireGuard and SSH tunnel transports + mock
+│   └── watchdog/           # File watcher, config reload, component lifecycle
+├── docker/                 # Dockerfile, docker-compose, DOCKER.md, helper script
+├── .github/workflows/      # CI (test + lint + build) and Release (multi-arch Docker + GitHub Release)
+├── Makefile                # Build, test, lint, and container management shortcuts
+└── config.example.yaml     # Annotated example configuration
 ```
 
 ## CI/CD
 
-This project uses GitHub Actions for continuous integration and deployment:
+This project uses GitHub Actions for continuous integration and deployment.
 
-- **Automated Testing**: Tests run on every push and pull request
-- **Docker Image Builds**: Multi-architecture images built automatically on tag creation
-- **Image Registries**: Images pushed to Docker Hub and GitHub Container Registry
+### Test Pipeline (`test.yml`) — runs on every push and PR
+
+| Job | Details |
+|---|---|
+| **Test** | `go test -race -count=3`, enforces **90% coverage** threshold, generates a coverage badge, and auto-creates a PR for it |
+| **Lint** | `go vet` + `staticcheck` + `golangci-lint` |
+| **Build** | Compiles binary and uploads artifact |
+
+### Release Pipeline (`release.yml`) — manual trigger via `workflow_dispatch`
+
+| Step | Details |
+|---|---|
+| **Versioning** | Semantic version bump (`patch`, `minor`, `major`) with automatic tag creation |
+| **Docker Build** | Multi-arch (`linux/amd64`, `linux/arm64`, `linux/arm/v7`) using native Go cross-compilation |
+| **Registry Push** | Docker Hub (`kfalabs/probixel`) + GHCR (`ghcr.io/kfalabs/probixel`) |
+| **GitHub Release** | Auto-generated release notes |
 
 ### Docker Builds
 

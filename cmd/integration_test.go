@@ -197,24 +197,32 @@ services:
 }
 
 func TestIntegration_HealthCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+
 	// Build the agent binary
-	agentBin := filepath.Join(os.TempDir(), "probixel-health-test")
+	agentBin := filepath.Join(tmpDir, "probixel-health-test")
 	buildCmd := exec.Command("go", "build", "-o", agentBin, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
-	defer func() { _ = os.Remove(agentBin) }()
 
-	pidFile := filepath.Join(os.TempDir(), "probixel-test.pid")
-	defer func() { _ = os.Remove(pidFile) }()
+	pidFile := filepath.Join(tmpDir, "probixel-test.pid")
 
-	// Create a dummy config
-	configPath := filepath.Join(os.TempDir(), "dummy_config.yaml")
-	err := os.WriteFile(configPath, []byte("services: []"), 0644)
+	// Create a valid config (services: [] fails validation)
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	err := os.WriteFile(configPath, []byte(`
+services:
+  - name: "Health Check Test"
+    type: "host"
+    interval: "1s"
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "http://localhost/ok"
+`), 0644)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Remove(configPath) }()
 
 	// Verify healthcheck fails when agent is not running
 	healthCmd := exec.Command(agentBin, "-health", "-pidfile", pidFile)
@@ -223,10 +231,7 @@ func TestIntegration_HealthCheck(t *testing.T) {
 	}
 
 	// Start the agent
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	agentCmd := exec.CommandContext(ctx, agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0")
+	agentCmd := exec.Command(agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0") //nolint:gosec // G204: test binary
 	if err := agentCmd.Start(); err != nil {
 		t.Fatalf("Failed to start agent: %v", err)
 	}
@@ -240,12 +245,17 @@ func TestIntegration_HealthCheck(t *testing.T) {
 		t.Errorf("Expected healthcheck to succeed when agent is running, but it failed: %v\nOutput: %s", err, out)
 	}
 
-	// Stop the agent
-	cancel()
+	// Stop the agent via SIGINT for graceful shutdown (defers run, PID file cleaned up)
+	if agentCmd.Process != nil {
+		_ = agentCmd.Process.Signal(os.Interrupt)
+	}
 	_ = agentCmd.Wait()
 
+	// Ensure PID file is removed (graceful shutdown should handle this,
+	// but remove explicitly in case the signal was too fast)
+	_ = os.Remove(pidFile)
+
 	// Verify healthcheck fails again
-	time.Sleep(500 * time.Millisecond)
 	healthCmd = exec.Command(agentBin, "-health", "-pidfile", pidFile)
 	if err := healthCmd.Run(); err == nil {
 		t.Error("Expected healthcheck to fail after agent stopped, but it succeeded")

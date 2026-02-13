@@ -29,7 +29,7 @@ func TestHostProbe_SetTargetMode(t *testing.T) {
 }
 
 func TestHostProbe_SetTimeout(t *testing.T) {
-	p := &HostProbe{}
-	p.SetTimeout(10 * time.Second)
-	// HostProbe's SetTimeout is a no-op, but we test it for coverage
+	probe := &HostProbe{}
+	probe.SetTimeout(10 * time.Second)
+	// No-op, just ensure no panic
 }

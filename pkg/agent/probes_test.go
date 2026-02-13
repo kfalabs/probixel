@@ -685,3 +685,57 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+func TestSetupProbe_TunnelDialer_AllProbeTypes(t *testing.T) {
+	registry := tunnels.NewRegistry()
+	mockT := &tunnels.MockTunnel{
+		NameFunc:           func() string { return "test-tunnel" },
+		TypeFunc:           func() string { return "ssh" },
+		IsStabilizedResult: true,
+		DialContextFunc: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return nil, fmt.Errorf("mock dial")
+		},
+	}
+	_ = registry.Register(mockT)
+
+	cfg := &config.Config{}
+
+	probeTypes := []struct {
+		svcType string
+		name    string
+	}{
+		{"http", "http-tunnel"},
+		{"ping", "ping-tunnel"},
+		{"dns", "dns-tunnel"},
+		{"udp", "udp-tunnel"},
+		{"tls", "tls-tunnel"},
+		{"ssh", "ssh-tunnel"},
+		{"docker", "docker-tunnel"},
+	}
+
+	for _, pt := range probeTypes {
+		t.Run(pt.svcType, func(t *testing.T) {
+			svc := config.Service{
+				Name:     pt.name,
+				Type:     pt.svcType,
+				Tunnel:   "test-tunnel",
+				Targets:  []string{"target:80"},
+				Interval: "60s",
+			}
+			if pt.svcType == "ssh" {
+				svc.SSH = &config.SSHConfig{User: "test"}
+			}
+			if pt.svcType == "docker" {
+				svc.Docker = &config.DockerConfig{Socket: "local"}
+			}
+
+			probe, err := SetupProbe(svc, cfg, registry)
+			if err != nil {
+				t.Fatalf("SetupProbe failed for %s: %v", pt.svcType, err)
+			}
+			if probe == nil {
+				t.Fatalf("probe is nil for %s", pt.svcType)
+			}
+		})
+	}
+}

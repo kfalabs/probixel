@@ -157,10 +157,7 @@ func (c *Config) Validate() error {
 			hasTunnel := svc.Tunnel != ""
 
 			if hasTunnel {
-				tunCfg, ok := c.Tunnels[svc.Tunnel]
-				if !ok {
-					return fmt.Errorf("service %q references unknown tunnel %q", svc.Name, svc.Tunnel)
-				}
+				tunCfg := c.Tunnels[svc.Tunnel]
 				if tunCfg.Type != "wireguard" {
 					return fmt.Errorf("service %q: WireGuard monitor cannot use a non-WireGuard tunnel %q (type: %q)", svc.Name, svc.Tunnel, tunCfg.Type)
 				}
@@ -284,7 +281,7 @@ func (c *Config) Validate() error {
 		// Validate notifier retries and effective timeout against service interval
 		// 1. Determine effective timeout for this service's notifier
 		// hierarchy: endpoint > service-shared > global > default (5s)
-		// We'll check Success endpoint specifically as it's mandatory
+		// Check Success endpoint specifically as it's mandatory
 		notifierTimeoutStr := svc.MonitorEndpoint.Success.Timeout
 		if notifierTimeoutStr == "" {
 			notifierTimeoutStr = svc.MonitorEndpoint.Timeout

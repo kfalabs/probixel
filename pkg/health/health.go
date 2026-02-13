@@ -7,6 +7,8 @@ import (
 	"syscall"
 )
 
+var findProcess = os.FindProcess
+
 // WritePIDFile writes the current process ID to the specified path.
 func WritePIDFile(path string) error {
 	pid := os.Getpid()
@@ -27,7 +29,7 @@ func CheckHealth(pidFile string) {
 		os.Exit(1)
 	}
 
-	process, err := os.FindProcess(pid)
+	process, err := findProcess(pid)
 	if err != nil {
 		fmt.Printf("Health check failed: could find process %d: %v\n", pid, err)
 		os.Exit(1)

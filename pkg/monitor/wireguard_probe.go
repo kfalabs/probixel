@@ -251,4 +251,5 @@ func parseLatestHandshake(uapi string) (time.Time, error) {
 
 func (p *WireguardProbe) SetTimeout(timeout time.Duration) {
 	// Not used for Wireguard probe
+	_ = timeout
 }

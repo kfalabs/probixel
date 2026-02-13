@@ -31,4 +31,5 @@ func (p *HostProbe) Check(ctx context.Context, target string) (Result, error) {
 
 func (p *HostProbe) SetTimeout(timeout time.Duration) {
 	// Not used for Host probe
+	_ = timeout
 }

@@ -216,11 +216,6 @@ func (p *Pusher) doPush(req *http.Request, endpoint *config.EndpointConfig, time
 		client = &newClient
 	}
 
-	// We need to be careful with req.Body if it were present, but NewRequest used nil.
-	// However, client.Do can modify the request (headers, etc).
-	// Actually, req.Header is modified by p.Push before the loop.
-	// If we were sending a body, we'd need to reset it.
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

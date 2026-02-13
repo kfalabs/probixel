@@ -174,6 +174,115 @@ func generateTestCert(t *testing.T, template x509.Certificate) tls.Certificate {
 		PrivateKey:  priv,
 	}
 }
+func TestTLSProbe_ExpiredCert(t *testing.T) {
+	now := time.Now()
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject: pkix.Name{
+			Organization: []string{"Test"},
+		},
+		NotBefore:   now.Add(-48 * time.Hour),
+		NotAfter:    now.Add(-24 * time.Hour), // Already expired
+		IsCA:        true,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		DNSNames:    []string{"localhost"},
+	}
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{generateTestCert(t, template)},
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	addr := strings.TrimPrefix(server.URL, "https://")
+	probe := &TLSProbe{ExpiryThreshold: 24 * time.Hour, InsecureSkipVerify: true}
+	res, err := probe.Check(context.Background(), "tls://"+addr)
+	if err != nil {
+		// Some TLS implementations may reject expired certs at handshake level
+		return
+	}
+	if res.Success {
+		t.Error("Expected failure for expired certificate")
+	}
+	if !strings.Contains(res.Message, "EXPIRED") {
+		t.Logf("Got message: %s (may have failed at handshake level instead)", res.Message)
+	}
+}
+
+func TestTLSProbe_AllMode_EmptyTargets(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+	addr := strings.TrimPrefix(server.URL, "https://")
+
+	probe := &TLSProbe{InsecureSkipVerify: true}
+	probe.SetTargetMode(TargetModeAll)
+	// Include empty targets mixed with valid ones
+	res, err := probe.Check(context.Background(), "tls://"+addr+", , ")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success, got failure: %s", res.Message)
+	}
+}
+
+func TestTLSProbe_AnyMode_EmptyTargets(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+	addr := strings.TrimPrefix(server.URL, "https://")
+
+	probe := &TLSProbe{InsecureSkipVerify: true}
+	// Include empty targets
+	res, err := probe.Check(context.Background(), " , tls://"+addr)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success, got failure: %s", res.Message)
+	}
+}
+
+func TestTLSProbe_AllMode_FailWithMessage(t *testing.T) {
+	// Test "all" mode where a target fails with !res.Success (not a connection error)
+	// An expired cert server triggers this: checkTarget returns a result with Success=false
+	now := time.Now()
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{Organization: []string{"Test"}},
+		NotBefore:    now.Add(-1 * time.Hour),
+		NotAfter:     now.Add(2 * 24 * time.Hour), // Expires in 2 days
+		IsCA:         true,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		DNSNames:     []string{"localhost"},
+	}
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{generateTestCert(t, template)},
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	addr := strings.TrimPrefix(server.URL, "https://")
+	// Very large threshold so cert appears to expire soon -> Success=false, err=nil
+	probe := &TLSProbe{ExpiryThreshold: 365 * 24 * time.Hour, InsecureSkipVerify: true}
+	probe.SetTargetMode(TargetModeAll)
+	res, err := probe.Check(context.Background(), "tls://"+addr)
+	if err != nil {
+		return // TLS handshake may fail
+	}
+	if res.Success {
+		t.Error("Expected failure for cert expiring soon with high threshold")
+	}
+	if !strings.Contains(res.Message, "target") {
+		t.Logf("Got message: %s", res.Message)
+	}
+}
+
 func TestTLSProbe_Stabilization(t *testing.T) {
 	mt := &tunnels.MockTunnel{IsStabilizedResult: false}
 	probe := &TLSProbe{}

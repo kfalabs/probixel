@@ -644,6 +644,91 @@ func TestPusher_Push_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestPusher_Push_SkipNotification(t *testing.T) {
+	pusher := NewPusher()
+	res := monitor.Result{
+		Success:          true,
+		SkipNotification: true,
+	}
+	alertCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: "http://should-not-be-called.test"},
+	}
+	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	if err != nil {
+		t.Errorf("Expected nil error for SkipNotification, got: %v", err)
+	}
+}
+
+func TestPusher_Push_Pending(t *testing.T) {
+	pusher := NewPusher()
+	res := monitor.Result{
+		Pending: true,
+	}
+	alertCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: "http://should-not-be-called.test"},
+	}
+	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	if err != nil {
+		t.Errorf("Expected nil error for Pending result, got: %v", err)
+	}
+}
+
+func TestPusher_Push_ContextCancelledBetweenRetries(t *testing.T) {
+	var cancel context.CancelFunc
+	attempts := 0
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			// Cancel context during first request so the between-retries check catches it
+			cancel()
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer testServer.Close()
+
+	pusher := NewPusher()
+	pusher.SetRateLimit(ptr("0"))
+
+	var ctx context.Context
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+
+	result := monitor.Result{Success: true}
+	endpointCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: testServer.URL},
+	}
+	globalCfg := config.GlobalMonitorEndpointConfig{
+		Retries: ptrInt(10),
+	}
+
+	err := pusher.Push(ctx, "test-service", result, endpointCfg, globalCfg)
+	if err == nil {
+		t.Error("Expected context cancellation error, got nil")
+	}
+	// Should have stopped well before all 10 retries
+	if attempts > 3 {
+		t.Errorf("Expected at most 3 attempts due to cancellation, got %d", attempts)
+	}
+}
+
+func TestPusher_Push_PreCancelledContext(t *testing.T) {
+	pusher := NewPusher()
+	pusher.SetRateLimit(ptr("0"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	result := monitor.Result{Success: true}
+	endpointCfg := config.MonitorEndpointConfig{
+		Success: config.EndpointConfig{URL: "http://127.0.0.1:1"},
+	}
+
+	err := pusher.Push(ctx, "test-service", result, endpointCfg, config.GlobalMonitorEndpointConfig{})
+	if err == nil {
+		t.Error("Expected context cancellation error, got nil")
+	}
+}
+
 func TestPusher_Push_LogVerification(t *testing.T) {
 	// Capture log output
 	var buf bytes.Buffer
