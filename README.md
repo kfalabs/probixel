@@ -1,13 +1,13 @@
 # Probixel
-![Coverage](https://img.shields.io/badge/Coverage-98.5%25-brightgreen)
+![Coverage](https://img.shields.io/badge/Coverage-98.6%25-brightgreen)
 
 A lightweight, configurable monitoring agent written in Go that checks the health of various services and sends alerts to configured endpoints such as Healthchecks.io, Uptime Kuma, Gatus, and more.
 
 This is not meant to replace an actual monitoring service, but to serve as a local agent that monitors your stack and sends the results (whether success/failure) to a monitoring service.
 
-This solves the problem of monitoring services that are behind a firewall and are not accessible from the internet and monitoring services.
+This solves the problem of monitoring services that are behind a firewall and are not accessible from the internet.
 
-***Note This project was developed with the assistance of AI coding agents.***
+***Note:** This project was developed with the assistance of AI coding agents.*
 
 [![Tests](https://github.com/kfalabs/probixel/actions/workflows/test.yml/badge.svg)](https://github.com/kfalabs/probixel/actions/workflows/test.yml)
 [![Release](https://github.com/kfalabs/probixel/actions/workflows/release.yml/badge.svg)](https://github.com/kfalabs/probixel/actions/workflows/release.yml)
@@ -39,8 +39,6 @@ make build-native
 
 # Run the agent
 ./probixel -config config.yaml
-
-
 ```
 
 ### CLI Flags
@@ -217,7 +215,7 @@ tunnels:
 ```
 
 #### Integrated Tunnel Transport
-Any probe type (`http`, `tcp`, `dns`, `udp`, `tls`) can route its traffic through a defined tunnel. By setting `tunnel: <name>` at the service level, the probe automatically uses the tunnel.
+Any probe type (`http`, `tcp`, `dns`, `udp`, `tls`, `ssh`, `docker`) can route its traffic through a defined tunnel. By setting `tunnel: <name>` at the service level, the probe automatically uses the tunnel.
 
 This allows you to perform health checks against internal targets without complex networking:
 - **HTTP/DNS-over-VPN**: Reach internal portals or private search domains.
@@ -242,7 +240,7 @@ Monitors HTTP/HTTPS endpoints with optional "intelligent" response validation.
     tunnel: "office-vpn" # Optional, tunnel name.
     http: # Optional HTTP block.
       method: "GET" # Optional, defaults to GET.
-      accepted_status_codes: "200-299" # Optional, defaults to "200-299"
+      accepted_status_codes: "200-299" # Optional, defaults to "200-399"
       insecure_skip_verify: true # Optional, defaults to false. Set to true for self-signed or invalid certificates.
       certificate_expiry: "2d" # Optional. Set to a duration to check the certificate expiry.
       headers: # These headers are only for the probe request, not for the alert endpoint. Ensure that you do not send sensitive information to your alert endpoints.
@@ -323,7 +321,7 @@ Checks TCP port connectivity.
     tunnel: "office-vpn" # Optional, tunnel name.
     timeout: "5s" # Optional service-level timeout, defaults to 5s.
     interval: "5m" # Required if the global `default_interval` is not set
-    targets: ["host1:5000", "host2:5001"] #Supports either a **YAML array** or a **comma-separated string**
+    targets: ["host1:5000", "host2:5001"] # Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
       success:
@@ -345,7 +343,7 @@ Verifies UDP port reachability.
     tunnel: "office-vpn" # Optional, tunnel name.
     timeout: "5s" # Optional, defaults to 5s.
     interval: "5m" # Required if the global `default_interval` is not set
-    targets: ["syslog.example.com:514", "syslog2.example.com:514"] #Supports either a **YAML array** or a **comma-separated string**
+    targets: ["syslog.example.com:514", "syslog2.example.com:514"] # Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
       success:
@@ -388,7 +386,7 @@ Verifies UDP port reachability.
     tunnel: "office-vpn" # Optional, tunnel name.
     timeout: "5s" # Optional, defaults to 5s.
     interval: "5m" # Required if the global `default_interval` is not set
-    targets: ["127.0.0.1", "test.local"] #Supports either a **YAML array** or a **comma-separated string**
+    targets: ["127.0.0.1", "test.local"] # Supports either a **YAML array** or a **comma-separated string**
     target_mode: "any" # Optional, defaults to "any". Set to "all" to fail if all targets are unreachable.
     monitor_endpoint:
       success:
@@ -399,7 +397,7 @@ Verifies UDP port reachability.
 
 #### Host
 - **Fields**: `targets` (optional), `target_mode` (optional)
-- **Behavior**: Heartbeat checks, also checks that the agent is running and the host is online.
+- **Behavior**: Sends a heartbeat signal confirming the agent is running.
 - **Example**:
   ```yaml
   - name: "Local Health Check"
@@ -549,7 +547,7 @@ services:
 > [!NOTE]
 > **Automatic Trimming**: All probes automatically trim leading and trailing whitespace from target strings. For probes supporting multi-targets (DNS, Docker, Ping, TCP, UDP), each individual target in the comma-separated list is trimmed (e.g., `"8.8.8.8,  1.1.1.1"` is parsed correctly).
 >
-> **Target Mode Support**: The `target_mode` setting is only applicable to probes that support multiple targets (`DNS`, `Docker`, `Ping`, `TCP`, `UDP`). The `HTTP`, `Host`, `SSH`, `WireGuard`, and `TLS` probes do not support multi-targets or `target_mode` in a meaningful way.
+> **Target Mode Support**: The `target_mode` setting is only applicable to probes that support multiple targets (`DNS`, `Docker`, `Ping`, `TCP`, `TLS`, `UDP`). The `HTTP`, `Host`, `SSH`, and `WireGuard` probes do not support multi-targets or `target_mode` in a meaningful way.
 
 ## Interval Format
 
@@ -599,7 +597,7 @@ monitor_endpoint:
 > [!IMPORTANT]
 > **Header Isolation**: The headers defined for the **HTTP Probe** (under the service root) are completely isolated from the **Alert headers** (under `monitor_endpoint`). This ensures that probe credentials (like API keys) are never sent to your alert/webhook provider.
 
-**Note**: The global `monitor_endpoint` supports only the `headers` field. Each success and failure URL (optional) must be configured at the service level.
+**Note**: The global `monitor_endpoint` supports `headers`, `timeout`, and `retries` fields. Each success and failure URL (optional) must be configured at the service level.
 
 ### HTTP Methods
 
@@ -632,9 +630,11 @@ The `Makefile` provides convenient shortcuts for common development tasks:
 
 | Target | Description |
 |---|---|
+| `make help` | Show available targets |
 | `make test` | Run all Go tests |
 | `make lint` | Run `golangci-lint` |
 | `make build-native` | Build native binary |
+| `make run-native` | Run native binary |
 | `make build` | Build Docker image |
 | `make build-arm64` | Build for ARM64 |
 | `make build-multi` | Multi-arch build (amd64, arm64, arm/v7) |
@@ -688,7 +688,7 @@ This project uses GitHub Actions for continuous integration and deployment.
 
 | Job | Details |
 |---|---|
-| **Test** | `go test -race -count=3`, enforces **90% coverage** threshold, generates a coverage badge, and auto-creates a PR for it |
+| **Test** | `go test -race -count=3`, enforces **96% coverage** threshold, generates a coverage badge, and auto-creates a PR for it |
 | **Lint** | `go vet` + `staticcheck` + `golangci-lint` |
 | **Build** | Compiles binary and uploads artifact |
 
