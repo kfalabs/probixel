@@ -16,6 +16,7 @@ jobs:
 
     permissions:
       contents: write
+      pull-requests: write
       actions: read
       statuses: read
       checks: write
@@ -54,15 +55,6 @@ jobs:
         go tool cover -func=coverage.out -o=coverage.out
         gobadge -filename=coverage.out
 
-    - name: Commit Coverage Badge
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      uses: stefanzweifel/git-auto-commit-action@v7
-      with:
-        file_pattern: README.md
-        commit_message: "chore: update coverage badge [skip ci]"
-        branch: "automation/coverage-badge"
-        create_branch: true
-
     - name: Create Pull Request
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       uses: peter-evans/create-pull-request@v8
@@ -72,6 +64,8 @@ jobs:
         title: "chore: update coverage badge"
         body: "Automated update of coverage badge."
         commit-message: "chore: update coverage badge [skip ci]"
+        add-paths: |
+          README.md
 
   lint:
     name: Lint
