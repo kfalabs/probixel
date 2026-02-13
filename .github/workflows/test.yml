@@ -58,8 +58,19 @@ jobs:
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       uses: stefanzweifel/git-auto-commit-action@v7
       with:
-        file_pattern: 'README.md'
-        commit_message: 'chore: update coverage badge [skip ci]'
+        file_pattern: README.md
+        commit_message: "chore: update coverage badge [skip ci]"
+        branch: "automation/coverage-badge"
+        create_branch: true
+
+    - name: Create Pull Request
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      uses: peter-evans/create-pull-request@v8
+      with:
+        branch: automation/coverage-badge
+        title: "chore: update coverage badge"
+        body: "Automated update of coverage badge."
+        commit-message: "chore: update coverage badge [skip ci]"
 
   lint:
     name: Lint
