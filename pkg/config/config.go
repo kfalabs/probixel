@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"golang.org/x/crypto/ssh"
-	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
