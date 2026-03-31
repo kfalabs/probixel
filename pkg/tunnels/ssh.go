@@ -55,7 +55,30 @@ func (t *SSHTunnel) DialContext(ctx context.Context, network, address string) (n
 	if err != nil {
 		return nil, err
 	}
-	return client.Dial(network, address)
+
+	// Enforce context deadline on client.Dial which has no native context support
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan dialResult, 1)
+	go func() {
+		conn, err := client.Dial(network, address)
+		ch <- dialResult{conn, err}
+	}()
+
+	select {
+	case res := <-ch:
+		return res.conn, res.err
+	case <-ctx.Done():
+		go func() {
+			res := <-ch
+			if res.conn != nil {
+				_ = res.conn.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 func (t *SSHTunnel) GetClient(ctx context.Context) (*ssh.Client, error) {
@@ -63,11 +86,23 @@ func (t *SSHTunnel) GetClient(ctx context.Context) (*ssh.Client, error) {
 	defer t.mu.Unlock()
 
 	if t.client != nil {
-		// Basic check if client is still alive (this isn't perfect but helps)
-		_, _, err := t.client.SendRequest("keepalive@probixel", true, nil)
-		if err == nil {
-			return t.client, nil
+		// Keepalive check with timeout to avoid hanging under lock
+		alive := make(chan error, 1)
+		client := t.client
+		go func() {
+			_, _, err := client.SendRequest("keepalive@probixel", true, nil)
+			alive <- err
+		}()
+
+		select {
+		case err := <-alive:
+			if err == nil {
+				return t.client, nil
+			}
+		case <-time.After(5 * time.Second):
+			// Keepalive timed out
 		}
+
 		_ = t.client.Close()
 		t.client = nil
 	}
@@ -90,6 +125,10 @@ func (t *SSHTunnel) GetClient(ctx context.Context) (*ssh.Client, error) {
 		sshConfig.Auth = append(sshConfig.Auth, ssh.PublicKeys(signer))
 	}
 
+	if t.target == "" {
+		return nil, fmt.Errorf("ssh tunnel %q has empty target", t.name)
+	}
+
 	target := t.target
 	if !strings.Contains(target, ":") {
 		port := t.cfg.Port
@@ -99,7 +138,7 @@ func (t *SSHTunnel) GetClient(ctx context.Context) (*ssh.Client, error) {
 		target = fmt.Sprintf("%s:%d", target, port)
 	}
 
-	d := net.Dialer{}
+	d := net.Dialer{Timeout: 10 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
 		return nil, fmt.Errorf("ssh dial failed: %w", err)
@@ -107,6 +146,7 @@ func (t *SSHTunnel) GetClient(ctx context.Context) (*ssh.Client, error) {
 
 	c, channel, req, err := ssh.NewClientConn(conn, target, sshConfig)
 	if err != nil {
+		_ = conn.Close() // Fix 14: close TCP conn on handshake failure
 		return nil, fmt.Errorf("ssh handshake failed: %w", err)
 	}
 

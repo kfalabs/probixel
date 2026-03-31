@@ -59,20 +59,7 @@ func (p *TCPProbe) Check(ctx context.Context, target string) (Result, error) {
 			}
 
 			start := time.Now()
-			var conn net.Conn
-			var err error
-
-			if p.DialContext != nil {
-				conn, err = p.DialContext(ctx, "tcp", t)
-			} else {
-				timeout := p.Timeout
-				if timeout == 0 {
-					timeout = 5 * time.Second
-				}
-				d := net.Dialer{Timeout: timeout}
-				conn, err = d.DialContext(ctx, "tcp", t)
-			}
-
+			conn, err := p.dialTCP(ctx, t)
 			if err != nil {
 				// In "all" mode, any failure means overall failure
 				return Result{
@@ -106,26 +93,7 @@ func (p *TCPProbe) Check(ctx context.Context, target string) (Result, error) {
 
 		// Try to connect
 		start := time.Now()
-		var conn net.Conn
-		var err error
-
-		if p.DialContext != nil {
-			// Create timeout context for tunnel dial
-			timeout := p.Timeout
-			if timeout == 0 {
-				timeout = 5 * time.Second
-			}
-			dialCtx, cancel := context.WithTimeout(ctx, timeout)
-			conn, err = p.DialContext(dialCtx, "tcp", t)
-			cancel()
-		} else {
-			timeout := p.Timeout
-			if timeout == 0 {
-				timeout = 5 * time.Second
-			}
-			d := net.Dialer{Timeout: timeout}
-			conn, err = d.DialContext(ctx, "tcp", t)
-		}
+		conn, err := p.dialTCP(ctx, t)
 		if err == nil {
 			_ = conn.Close()
 			return Result{
@@ -146,6 +114,22 @@ func (p *TCPProbe) Check(ctx context.Context, target string) (Result, error) {
 		Timestamp: startTotal,
 	}, nil
 }
+func (p *TCPProbe) dialTCP(ctx context.Context, target string) (net.Conn, error) {
+	timeout := p.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	if p.DialContext != nil {
+		dialCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return p.DialContext(dialCtx, "tcp", target)
+	}
+
+	d := net.Dialer{Timeout: timeout}
+	return d.DialContext(ctx, "tcp", target)
+}
+
 func (p *TCPProbe) SetTimeout(timeout time.Duration) {
 	p.Timeout = timeout
 }

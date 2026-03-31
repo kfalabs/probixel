@@ -93,35 +93,14 @@ func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, erro
 		}
 	}
 
-	var maxAge time.Duration
-	if p.Config != nil && p.Config.MaxAge != "" {
-		var err error
-		maxAge, err = config.ParseDuration(p.Config.MaxAge)
-		if err != nil {
-			return Result{
-				Success:   false,
-				Duration:  time.Since(start),
-				Message:   fmt.Sprintf("invalid max_age: %v", err),
-				Timestamp: start,
-			}, nil
-		}
-	} else if p.tunnel != nil {
-		if wgTun, ok := p.tunnel.(interface {
-			Config() *config.WireguardConfig
-		}); ok {
-			if cfg := wgTun.Config(); cfg != nil && cfg.MaxAge != "" {
-				var err error
-				maxAge, err = config.ParseDuration(cfg.MaxAge)
-				if err != nil {
-					return Result{
-						Success:   false,
-						Duration:  time.Since(start),
-						Message:   fmt.Sprintf("invalid max_age from tunnel: %v", err),
-						Timestamp: start,
-					}, nil
-				}
-			}
-		}
+	maxAge, err := p.resolveMaxAge()
+	if err != nil {
+		return Result{
+			Success:   false,
+			Duration:  time.Since(start),
+			Message:   err.Error(),
+			Timestamp: start,
+		}, nil
 	}
 
 
@@ -247,6 +226,33 @@ func parseLatestHandshake(uapi string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, nil
+}
+
+func (p *WireguardProbe) resolveMaxAge() (time.Duration, error) {
+	if p.Config != nil && p.Config.MaxAge != "" {
+		d, err := config.ParseDuration(p.Config.MaxAge)
+		if err != nil {
+			return 0, fmt.Errorf("invalid max_age: %v", err)
+		}
+		return d, nil
+	}
+	if p.tunnel == nil {
+		return 0, nil
+	}
+	wgTun, ok := p.tunnel.(interface {
+		Config() *config.WireguardConfig
+	})
+	if !ok {
+		return 0, nil
+	}
+	if cfg := wgTun.Config(); cfg != nil && cfg.MaxAge != "" {
+		d, err := config.ParseDuration(cfg.MaxAge)
+		if err != nil {
+			return 0, fmt.Errorf("invalid max_age from tunnel: %v", err)
+		}
+		return d, nil
+	}
+	return 0, nil
 }
 
 func (p *WireguardProbe) SetTimeout(timeout time.Duration) {

@@ -7,9 +7,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"probixel/pkg/config"
@@ -28,6 +30,45 @@ type HTTPProbe struct {
 	Timeout             time.Duration     // Timeout for HTTP requests
 	DialContext         func(ctx context.Context, network, address string) (net.Conn, error)
 	tunnel              tunnels.Tunnel
+	clientOnce          sync.Once
+	cachedClient        *http.Client
+	parsedStatusCodes   []statusRange
+	statusCodesParsed   bool
+}
+
+type statusRange struct {
+	start int
+	end   int
+}
+
+func (p *HTTPProbe) getClient() *http.Client {
+	p.clientOnce.Do(func() {
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: p.InsecureSkipVerify}, //nolint:gosec
+			DialContext:     p.DialContext,
+		}
+		timeout := p.Timeout
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		p.cachedClient = &http.Client{
+			Transport: tr,
+			Timeout:   timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return fmt.Errorf("stopped after 10 redirects")
+				}
+				return nil
+			},
+		}
+	})
+	return p.cachedClient
+}
+
+func (p *HTTPProbe) Close() {
+	if p.cachedClient != nil {
+		p.cachedClient.CloseIdleConnections()
+	}
 }
 
 func (p *HTTPProbe) SetTunnel(t tunnels.Tunnel) {
@@ -58,32 +99,24 @@ func (p *HTTPProbe) Check(ctx context.Context, target string) (Result, error) {
 		}, nil
 	}
 
-	// Create a custom client to handle timeouts and insecure skip verify if needed
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: p.InsecureSkipVerify}, //nolint:gosec // G402: Optional skip for untrusted endpoints
-		DialContext:     p.DialContext,
-	}
-
-	// Use configured timeout, default to 5 seconds
-	timeout := p.Timeout
-	if timeout == 0 {
-		timeout = 5 * time.Second
-	}
-
-	client := &http.Client{
-		Transport: tr,
-		Timeout:   timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return nil // Follow redirects by default
-		},
-	}
+	client := p.getClient()
 
 	method := p.Method
 	if method == "" {
 		method = "GET"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, target, nil)
+	parsedURL, err := url.Parse(target)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return Result{
+			Success:   false,
+			Duration:  time.Since(start),
+			Message:   fmt.Sprintf("invalid URL or unsupported scheme: %s", target),
+			Timestamp: start,
+		}, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), nil)
 	if err != nil {
 		return Result{
 			Success:   false,
@@ -98,7 +131,7 @@ func (p *HTTPProbe) Check(ctx context.Context, target string) (Result, error) {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: URL is validated via url.Parse with scheme check above
 	if err != nil {
 		return Result{
 			Success:   false,
@@ -107,7 +140,10 @@ func (p *HTTPProbe) Check(ctx context.Context, target string) (Result, error) {
 			Timestamp: start,
 		}, nil
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 
 	duration := time.Since(start)
 
@@ -117,7 +153,7 @@ func (p *HTTPProbe) Check(ctx context.Context, target string) (Result, error) {
 
 	// If status code check passed and there are expectations, check them,
 	if success && p.MatchData != nil && len(p.MatchData.Expectations) > 0 {
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
 		if err != nil {
 			return Result{
 				Success:   false,
@@ -182,24 +218,9 @@ func (p *HTTPProbe) evaluateExpectations(body []byte, headers http.Header) (bool
 			res := gjson.Get(jsonStr, exp.JSONPath)
 			results := res.Array()
 			if len(results) > 0 {
-				// Wildcard query, result set, or literal array: pass if ANY element matches
-				anyPassed := false
-				var lastErr error
-				for _, item := range results {
-					passed, err := p.evaluateOperator(exp.Operator, item.String(), exp.Value)
-					if err == nil && passed {
-						anyPassed = true
-						break
-					}
-					if err != nil {
-						lastErr = err
-					}
-				}
-				if !anyPassed {
-					if lastErr != nil {
-						return false, fmt.Sprintf("expectation failed: %v", lastErr)
-					}
-					return false, fmt.Sprintf("expectation failed: no element in %s %s %s", exp.JSONPath, exp.Operator, exp.Value)
+				ok, msg := p.evaluateArrayResults(results, exp)
+				if !ok {
+					return false, msg
 				}
 				continue // This expectation passed
 			}
@@ -228,6 +249,29 @@ func (p *HTTPProbe) evaluateExpectations(body []byte, headers http.Header) (bool
 		}
 	}
 	return true, "Expectations met"
+}
+
+func (p *HTTPProbe) evaluateArrayResults(results []gjson.Result, exp config.Expectation) (bool, string) {
+	// Wildcard query, result set, or literal array: pass if ANY element matches
+	anyPassed := false
+	var lastErr error
+	for _, item := range results {
+		passed, err := p.evaluateOperator(exp.Operator, item.String(), exp.Value)
+		if err == nil && passed {
+			anyPassed = true
+			break
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if !anyPassed {
+		if lastErr != nil {
+			return false, fmt.Sprintf("expectation failed: %v", lastErr)
+		}
+		return false, fmt.Sprintf("expectation failed: no element in %s %s %s", exp.JSONPath, exp.Operator, exp.Value)
+	}
+	return true, ""
 }
 
 func (p *HTTPProbe) evaluateOperator(op, actual, target string) (bool, error) {
@@ -300,42 +344,58 @@ func (p *HTTPProbe) parseTimestamp(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unrecognized time format")
 }
 
-func (p *HTTPProbe) checkStatusCode(code int) bool {
-	if p.AcceptedStatusCodes == "" {
-		// Default behavior: 200-399 is considered success (including redirects if not followed, but usually 2xx)
-		return code >= 200 && code < 400
+func (p *HTTPProbe) parseStatusCodesOnce() {
+	if p.statusCodesParsed {
+		return
 	}
-
+	p.statusCodesParsed = true
+	if p.AcceptedStatusCodes == "" {
+		return
+	}
 	parts := strings.Split(p.AcceptedStatusCodes, ",")
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
-
-		if strings.Contains(part, "-") {
-			// Range: "200-299"
-			ranges := strings.Split(part, "-")
-			if len(ranges) == 2 {
-				start, err1 := strconv.Atoi(strings.TrimSpace(ranges[0]))
-				end, err2 := strconv.Atoi(strings.TrimSpace(ranges[1]))
-				if err1 == nil && err2 == nil {
-					if code >= start && code <= end {
-						return true
-					}
-				}
-			}
-		} else {
-			// Single value: "200"
-			val, err := strconv.Atoi(part)
-			if err == nil {
-				if code == val {
-					return true
-				}
-			}
+		if sr, ok := parseStatusCodePart(part); ok {
+			p.parsedStatusCodes = append(p.parsedStatusCodes, *sr)
 		}
 	}
+}
 
+func parseStatusCodePart(part string) (*statusRange, bool) {
+	if strings.Contains(part, "-") {
+		rangeParts := strings.Split(part, "-")
+		if len(rangeParts) == 2 {
+			start, err1 := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
+			end, err2 := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
+			if err1 == nil && err2 == nil {
+				return &statusRange{start: start, end: end}, true
+			}
+		}
+		return nil, false
+	}
+	val, err := strconv.Atoi(part)
+	if err == nil {
+		return &statusRange{start: val, end: val}, true
+	}
+	return nil, false
+}
+
+func (p *HTTPProbe) checkStatusCode(code int) bool {
+	p.parseStatusCodesOnce()
+	if len(p.parsedStatusCodes) == 0 {
+		if p.AcceptedStatusCodes == "" {
+			return code >= 200 && code < 400
+		}
+		return false // User specified codes but none were valid
+	}
+	for _, r := range p.parsedStatusCodes {
+		if code >= r.start && code <= r.end {
+			return true
+		}
+	}
 	return false
 }
 func (p *HTTPProbe) SetTimeout(timeout time.Duration) {

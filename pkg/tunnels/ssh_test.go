@@ -50,7 +50,7 @@ func TestSSHTunnel(t *testing.T) {
 
 func TestSSHTunnel_Integration(t *testing.T) {
 	// 1. Setup mock SSH server
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestSSHTunnel_Integration(t *testing.T) {
 
 func TestSSHTunnel_HandshakeError(t *testing.T) {
 	// Start a non-SSH TCP server
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestSSHTunnel_HandshakeError(t *testing.T) {
 func TestSSHTunnel_ReconnectOnFailure(t *testing.T) {
 	// 1. Start a flaky server that can be stopped and started
 	startServer := func() (net.Listener, int) {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
+		l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("failed to listen: %v", err)
 		}
@@ -272,7 +272,7 @@ func TestSSHTunnel_ReconnectOnFailure(t *testing.T) {
 
 	conns := make(chan net.Conn, 1)
 
-	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	l2, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen 2: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestSSHTunnel_StatusMethods(t *testing.T) {
 
 func TestSSHTunnel_ReportFailure_WithClient(t *testing.T) {
 	// 1. Start a mock SSH server
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -479,5 +479,93 @@ func TestSSHTunnel_GetClient_CustomPort(t *testing.T) {
 	_, err := tun.GetClient(ctx)
 	if err == nil {
 		t.Fatal("expected connection error")
+	}
+}
+
+func TestSSHTunnel_DialContext_CancelledContext(t *testing.T) {
+	// Start a mock SSH server
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	host, portStr, _ := net.SplitHostPort(listener.Addr().String())
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	serverConfig := &ssh.ServerConfig{
+		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			return nil, nil
+		},
+	}
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	signer, _ := ssh.NewSignerFromKey(key)
+	serverConfig.AddHostKey(signer)
+
+	go func() {
+		for {
+			nConn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				sConn, chans, reqs, err := ssh.NewServerConn(nConn, serverConfig)
+				if err != nil {
+					return
+				}
+				defer sConn.Close()
+				go ssh.DiscardRequests(reqs)
+				for newChan := range chans {
+					if newChan.ChannelType() != "direct-tcpip" {
+						newChan.Reject(ssh.UnknownChannelType, "unknown channel type")
+						continue
+					}
+					// Accept but block indefinitely to force context cancellation path
+					ch, _, _ := newChan.Accept()
+					// Hold the channel open; it will be closed when the test ends
+					_ = ch
+				}
+			}()
+		}
+	}()
+
+	tun := NewSSHTunnel("cancel-tun", host, &config.SSHConfig{
+		User:     "test",
+		Password: "test",
+		Port:     port,
+	})
+
+	// First establish a connection
+	_, err = tun.GetClient(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get client: %v", err)
+	}
+
+	// Now dial with an already-cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err = tun.DialContext(ctx, "tcp", "127.0.0.1:22")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestSSHTunnel_GetClient_EmptyTarget(t *testing.T) {
+	tun := NewSSHTunnel("empty-target", "", &config.SSHConfig{
+		User:     "test",
+		Password: "pass",
+	})
+
+	_, err := tun.GetClient(context.Background())
+	if err == nil {
+		t.Fatal("expected error for empty target")
+	}
+	if !strings.Contains(err.Error(), "empty target") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }

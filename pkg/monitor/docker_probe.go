@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"probixel/pkg/config"
@@ -21,6 +24,12 @@ type DockerProbe struct {
 	Timeout     time.Duration
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 	tunnel      tunnels.Tunnel
+
+	// Cached HTTP client to avoid creating new transports per check
+	cachedClient *http.Client
+	cachedAPIURL string
+	clientOnce   sync.Once
+	clientErr    error
 }
 
 func (p *DockerProbe) SetTunnel(t tunnels.Tunnel) {
@@ -60,15 +69,18 @@ func (p *DockerProbe) Check(ctx context.Context, target string) (Result, error) 
 		}, nil
 	}
 
-	client, apiURL, err := p.getClient(cfg)
-	if err != nil {
+	p.clientOnce.Do(func() {
+		p.cachedClient, p.cachedAPIURL, p.clientErr = p.buildClient(cfg)
+	})
+	if p.clientErr != nil {
 		return Result{
 			Success:   false,
 			Duration:  time.Since(start),
-			Message:   fmt.Sprintf("failed to initialize docker client: %v", err),
+			Message:   fmt.Sprintf("failed to initialize docker client: %v", p.clientErr),
 			Timestamp: start,
 		}, nil
 	}
+	client, apiURL := p.cachedClient, p.cachedAPIURL
 
 	if p.targetMode == TargetModeAll {
 		var totalDuration time.Duration
@@ -125,8 +137,11 @@ func (p *DockerProbe) Check(ctx context.Context, target string) (Result, error) 
 
 func (p *DockerProbe) checkOne(ctx context.Context, client *http.Client, apiURL string, cfg config.DockerSocketConfig, target string) Result {
 	start := time.Now()
-	url := fmt.Sprintf("%s/containers/%s/json", apiURL, target)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	parsedURL, err := url.JoinPath(apiURL, "containers", target, "json")
+	if err != nil {
+		return Result{Success: false, Message: fmt.Sprintf("failed to build URL: %v", err)}
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", parsedURL, nil)
 	if err != nil {
 		return Result{Success: false, Message: fmt.Sprintf("failed to create request: %v", err)}
 	}
@@ -135,11 +150,14 @@ func (p *DockerProbe) checkOne(ctx context.Context, client *http.Client, apiURL 
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: URL is constructed from validated config, not arbitrary user input
 	if err != nil {
 		return Result{Success: false, Message: fmt.Sprintf("docker api request failed: %v", err)}
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return Result{Success: false, Message: fmt.Sprintf("container %q not found", target), Target: target}
@@ -186,11 +204,18 @@ func (p *DockerProbe) checkOne(ctx context.Context, client *http.Client, apiURL 
 	}
 }
 
-func (p *DockerProbe) getClient(cfg config.DockerSocketConfig) (*http.Client, string, error) {
+func (p *DockerProbe) Close() {
+	if p.cachedClient != nil {
+		p.cachedClient.CloseIdleConnections()
+	}
+}
+
+func (p *DockerProbe) buildClient(cfg config.DockerSocketConfig) (*http.Client, string, error) {
 	if cfg.Socket != "" {
 		tr := &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return net.Dial("unix", cfg.Socket)
+				d := net.Dialer{}
+				return d.DialContext(ctx, "unix", cfg.Socket)
 			},
 		}
 		// When using unix socket, the host in the URL is ignored but must be present

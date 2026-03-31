@@ -92,7 +92,7 @@ func TestPusher_Push_Failure(t *testing.T) {
 	}
 	res := monitor.Result{Success: true}
 
-	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{Retries: ptrInt(0)})
 	if err == nil {
 		t.Error("Expected error from 500 response, got nil")
 	}
@@ -249,7 +249,7 @@ func TestPusher_Push_DoError(t *testing.T) {
 		Success: config.EndpointConfig{URL: "http://127.0.0.1:1"},
 	}
 
-	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{})
+	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{Retries: ptrInt(0)})
 	if err == nil {
 		t.Error("Expected error from failing Do(), got nil")
 	}
@@ -270,7 +270,7 @@ func TestPushInsecure(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	globalCfg := config.GlobalMonitorEndpointConfig{}
+	globalCfg := config.GlobalMonitorEndpointConfig{Retries: ptrInt(0)}
 
 	t.Run("Fail with default client (TLS verification on)", func(t *testing.T) {
 		endpointCfg := config.MonitorEndpointConfig{
@@ -477,7 +477,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 			},
 			Timeout: "500ms",
 		}
-		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s"}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s", Retries: ptrInt(0)}
 
 		err := pusher.Push(context.Background(), "test-service", res, alertCfg, globalCfg)
 		if err == nil {
@@ -492,7 +492,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 			Success: config.EndpointConfig{URL: testServer.URL},
 			Timeout: "50ms",
 		}
-		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s"}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s", Retries: ptrInt(0)}
 
 		err := pusher.Push(context.Background(), "test-service", res, alertCfg, globalCfg)
 		if err == nil {
@@ -506,7 +506,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 		alertCfg := config.MonitorEndpointConfig{
 			Success: config.EndpointConfig{URL: testServer.URL},
 		}
-		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "50ms"}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "50ms", Retries: ptrInt(0)}
 
 		err := pusher.Push(context.Background(), "test-service", res, alertCfg, globalCfg)
 		if err == nil {
@@ -729,6 +729,63 @@ func TestPusher_Push_PreCancelledContext(t *testing.T) {
 	}
 }
 
+func TestPusher_Cleanup(t *testing.T) {
+	t.Run("removes inactive services", func(t *testing.T) {
+		pusher := NewPusher()
+		pusher.lastPush["active-svc"] = time.Now()
+		pusher.lastPush["inactive-svc"] = time.Now()
+
+		activeServices := map[string]bool{
+			"active-svc": true,
+		}
+		pusher.Cleanup(activeServices)
+
+		if _, ok := pusher.lastPush["inactive-svc"]; ok {
+			t.Error("Expected inactive-svc to be removed from lastPush")
+		}
+		if _, ok := pusher.lastPush["active-svc"]; !ok {
+			t.Error("Expected active-svc to remain in lastPush")
+		}
+	})
+
+	t.Run("keeps all active services", func(t *testing.T) {
+		pusher := NewPusher()
+		pusher.lastPush["svc1"] = time.Now()
+		pusher.lastPush["svc2"] = time.Now()
+
+		activeServices := map[string]bool{
+			"svc1": true,
+			"svc2": true,
+		}
+		pusher.Cleanup(activeServices)
+
+		if len(pusher.lastPush) != 2 {
+			t.Errorf("Expected 2 entries, got %d", len(pusher.lastPush))
+		}
+	})
+
+	t.Run("empty map clears all", func(t *testing.T) {
+		pusher := NewPusher()
+		pusher.lastPush["svc1"] = time.Now()
+		pusher.lastPush["svc2"] = time.Now()
+
+		pusher.Cleanup(map[string]bool{})
+
+		if len(pusher.lastPush) != 0 {
+			t.Errorf("Expected 0 entries after cleanup with empty active map, got %d", len(pusher.lastPush))
+		}
+	})
+
+	t.Run("no-op on empty lastPush", func(t *testing.T) {
+		pusher := NewPusher()
+		pusher.Cleanup(map[string]bool{"svc1": true})
+
+		if len(pusher.lastPush) != 0 {
+			t.Errorf("Expected 0 entries, got %d", len(pusher.lastPush))
+		}
+	})
+}
+
 func TestPusher_Push_LogVerification(t *testing.T) {
 	// Capture log output
 	var buf bytes.Buffer
@@ -758,11 +815,11 @@ func TestPusher_Push_LogVerification(t *testing.T) {
 
 	logs := buf.String()
 
-	// parsed URL expected in log
-	expectedURL := testServer.URL + "?d=100"
+	// URL query params are masked in logs for security
+	maskedURL := testServer.URL + "?***"
 
-	// Verify "Sending notifications to ->" format
-	expectedLog := fmt.Sprintf("[%s] Sending notifications to -> %s", svcName, expectedURL)
+	// Verify "Sending notifications to ->" format with masked query params
+	expectedLog := fmt.Sprintf("[%s] Sending notifications to -> %s", svcName, maskedURL)
 	if !strings.Contains(logs, expectedLog) {
 		t.Errorf("Expected log to contain %q, got:\n%s", expectedLog, logs)
 	}

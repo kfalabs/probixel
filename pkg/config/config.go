@@ -1,8 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +29,58 @@ type TunnelConfig struct {
 	Wireguard *WireguardConfig `yaml:"wireguard,omitempty"`
 }
 
+func (c *Config) validateWireguardService(svc Service) error {
+	if svc.Tunnel != "" {
+		tunCfg := c.Tunnels[svc.Tunnel]
+		if tunCfg.Type != "wireguard" {
+			return fmt.Errorf("service %q: WireGuard monitor cannot use a non-WireGuard tunnel %q (type: %q)", svc.Name, svc.Tunnel, tunCfg.Type)
+		}
+		// Users must provide max_age in the service config, not reliance on validity of tunnel config for checks.
+		if svc.Wireguard == nil || svc.Wireguard.MaxAge == "" {
+			return fmt.Errorf("service %q: WireGuard monitor using tunnel %q must specify 'wireguard.max_age'", svc.Name, svc.Tunnel)
+		}
+		if err := svc.Wireguard.validateAndSetDefaults(); err != nil {
+			return fmt.Errorf("service %q wireguard: %w", svc.Name, err)
+		}
+		return nil
+	}
+
+	// Inline only
+	if svc.Wireguard == nil {
+		return fmt.Errorf("service %q: must have either a root 'tunnel' OR an inline 'wireguard' configuration", svc.Name)
+	}
+	if svc.Wireguard.MaxAge == "" {
+		return fmt.Errorf("service %q wireguard.max_age is mandatory (heartbeat check)", svc.Name)
+	}
+	if err := svc.Wireguard.validateAndSetDefaults(); err != nil {
+		return fmt.Errorf("service %q wireguard: %w", svc.Name, err)
+	}
+	return nil
+}
+
+func validateSSHService(name string, sshCfg *SSHConfig) error {
+	authRequired := true
+	if sshCfg.AuthRequired != nil {
+		authRequired = *sshCfg.AuthRequired
+	}
+	if !authRequired {
+		return nil
+	}
+	if sshCfg.User == "" {
+		return fmt.Errorf("service %q ssh user is mandatory when auth_required is true", name)
+	}
+	if sshCfg.Password == "" && sshCfg.PrivateKey == "" {
+		return fmt.Errorf("service %q ssh password or private_key is mandatory when auth_required is true", name)
+	}
+	if sshCfg.PrivateKey != "" {
+		_, err := ssh.ParsePrivateKey([]byte(sshCfg.PrivateKey))
+		if err != nil {
+			return fmt.Errorf("service %q ssh private_key is invalid: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func (c *Config) Validate() error {
 	if c.Global.DefaultInterval != "" {
 		if _, err := ParseDuration(c.Global.DefaultInterval); err != nil {
@@ -45,6 +101,9 @@ func (c *Config) Validate() error {
 		if socketCfg.Socket == "" && (socketCfg.Host == "" || socketCfg.Port == 0) {
 			return fmt.Errorf("docker socket %q is invalid: must provide either socket path or host/port", name)
 		}
+		if socketCfg.Port != 0 && (socketCfg.Port < 0 || socketCfg.Port > 65535) {
+			return fmt.Errorf("docker socket %q: port %d out of range (0-65535)", name, socketCfg.Port)
+		}
 	}
 
 	for name, tunnelCfg := range c.Tunnels {
@@ -53,6 +112,11 @@ func (c *Config) Validate() error {
 		}
 		switch tunnelCfg.Type {
 		case "ssh":
+			if tunnelCfg.SSH != nil && tunnelCfg.SSH.Port != 0 {
+				if tunnelCfg.SSH.Port < 0 || tunnelCfg.SSH.Port > 65535 {
+					return fmt.Errorf("tunnel %q: port %d out of range (0-65535)", name, tunnelCfg.SSH.Port)
+				}
+			}
 			if tunnelCfg.SSH == nil {
 				return fmt.Errorf("tunnel %q of type ssh requires ssh section", name)
 			}
@@ -63,7 +127,12 @@ func (c *Config) Validate() error {
 			if tunnelCfg.SSH.User == "" {
 				return fmt.Errorf("tunnel %q ssh user is mandatory", name)
 			}
-			// ... other auth checks ...
+			if tunnelCfg.SSH.PrivateKey != "" {
+				_, err := ssh.ParsePrivateKey([]byte(tunnelCfg.SSH.PrivateKey))
+				if err != nil {
+					return fmt.Errorf("tunnel %q ssh private_key is invalid: %w", name, err)
+				}
+			}
 		case "wireguard":
 			if tunnelCfg.Wireguard == nil {
 				return fmt.Errorf("tunnel %q of type wireguard requires wireguard section", name)
@@ -79,15 +148,24 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	seen := make(map[string]bool)
 	for i, svc := range c.Services {
 		if svc.Name == "" {
 			return fmt.Errorf("service[%d] name is mandatory", i)
 		}
+		if seen[svc.Name] {
+			return fmt.Errorf("service %q: duplicate service name", svc.Name)
+		}
+		seen[svc.Name] = true
 
 		if svc.Tunnel != "" {
 			if _, ok := c.Tunnels[svc.Tunnel]; !ok {
 				return fmt.Errorf("service %q references unknown tunnel %q", svc.Name, svc.Tunnel)
 			}
+		}
+
+		if svc.TargetMode != "" && svc.TargetMode != "any" && svc.TargetMode != "all" {
+			return fmt.Errorf("service %q has invalid target_mode %q (must be 'any' or 'all')", svc.Name, svc.TargetMode)
 		}
 
 		if svc.Interval == "" && c.Global.DefaultInterval == "" {
@@ -154,31 +232,8 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("service %q targets is mandatory (container name)", svc.Name)
 			}
 		case "wireguard":
-			hasTunnel := svc.Tunnel != ""
-
-			if hasTunnel {
-				tunCfg := c.Tunnels[svc.Tunnel]
-				if tunCfg.Type != "wireguard" {
-					return fmt.Errorf("service %q: WireGuard monitor cannot use a non-WireGuard tunnel %q (type: %q)", svc.Name, svc.Tunnel, tunCfg.Type)
-				}
-				// Users must provide max_age in the service config, not reliance on validity of tunnel config for checks.
-				if svc.Wireguard == nil || svc.Wireguard.MaxAge == "" {
-					return fmt.Errorf("service %q: WireGuard monitor using tunnel %q must specify 'wireguard.max_age'", svc.Name, svc.Tunnel)
-				}
-				if err := svc.Wireguard.validateAndSetDefaults(); err != nil {
-					return fmt.Errorf("service %q wireguard: %w", svc.Name, err)
-				}
-			} else {
-				// Inline only
-				if svc.Wireguard == nil {
-					return fmt.Errorf("service %q: must have either a root 'tunnel' OR an inline 'wireguard' configuration", svc.Name)
-				}
-				if svc.Wireguard.MaxAge == "" {
-					return fmt.Errorf("service %q wireguard.max_age is mandatory (heartbeat check)", svc.Name)
-				}
-				if err := svc.Wireguard.validateAndSetDefaults(); err != nil {
-					return fmt.Errorf("service %q wireguard: %w", svc.Name, err)
-				}
+			if err := c.validateWireguardService(svc); err != nil {
+				return err
 			}
 		case "udp":
 			if len(svc.Targets) == 0 {
@@ -192,23 +247,8 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("service %q ssh requires at least a 'target' OR a root 'tunnel'", svc.Name)
 			}
 			if svc.SSH != nil {
-				authRequired := true
-				if svc.SSH.AuthRequired != nil {
-					authRequired = *svc.SSH.AuthRequired
-				}
-				if authRequired {
-					if svc.SSH.User == "" {
-						return fmt.Errorf("service %q ssh user is mandatory when auth_required is true", svc.Name)
-					}
-					if svc.SSH.Password == "" && svc.SSH.PrivateKey == "" {
-						return fmt.Errorf("service %q ssh password or private_key is mandatory when auth_required is true", svc.Name)
-					}
-					if svc.SSH.PrivateKey != "" {
-						_, err := ssh.ParsePrivateKey([]byte(svc.SSH.PrivateKey))
-						if err != nil {
-							return fmt.Errorf("service %q ssh private_key is invalid: %w", svc.Name, err)
-						}
-					}
+				if err := validateSSHService(svc.Name, svc.SSH); err != nil {
+					return err
 				}
 			}
 		default:
@@ -433,9 +473,9 @@ type UDPConfig struct {
 }
 
 type SSHConfig struct {
-	User         string `yaml:"user,omitempty"`
-	Password     string `yaml:"password,omitempty"`
-	PrivateKey   string `yaml:"private_key,omitempty"`
+	User         string `yaml:"user,omitempty" json:"-"`
+	Password     string `yaml:"password,omitempty" json:"-"`
+	PrivateKey   string `yaml:"private_key,omitempty" json:"-"`
 	AuthRequired *bool  `yaml:"auth_required,omitempty"` // Default to true
 	Port         int    `yaml:"port,omitempty"`          // Default to 22
 }
@@ -443,8 +483,8 @@ type SSHConfig struct {
 type WireguardConfig struct {
 	Endpoint            string `yaml:"endpoint"`
 	PublicKey           string `yaml:"public_key"`
-	PrivateKey          string `yaml:"private_key"`
-	PresharedKey        string `yaml:"preshared_key"`
+	PrivateKey          string `yaml:"private_key" json:"-"`
+	PresharedKey        string `yaml:"preshared_key" json:"-"`
 	Addresses           string `yaml:"addresses"`
 	AllowedIPs          string `yaml:"allowed_ips"`
 	PersistentKeepalive int    `yaml:"persistent_keepalive"`
@@ -493,15 +533,48 @@ type EndpointConfig struct {
 	Timeout            string            `yaml:"timeout,omitempty"`
 }
 
+func validateEndpointURL(urlStr string) error {
+	if urlStr == "" {
+		return nil
+	}
+	// Allow template variables in URL
+	if strings.Contains(urlStr, "{%") {
+		return nil
+	}
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %w", urlStr, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("URL %q must use http or https scheme", urlStr)
+	}
+	return nil
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: Config file path from command line flag is expected
 	if err != nil {
 		return nil, err
 	}
+
+	cleanPath := filepath.Clean(path)
+	if info, err := os.Stat(cleanPath); err == nil { //nolint:gosec // G703: path is from CLI flag, filepath.Clean applied
+		if info.Mode().Perm()&0077 != 0 {
+			perm := fmt.Sprintf("%04o", info.Mode().Perm())
+			log.Printf("WARNING: Config file %s has insecure permissions %s. Recommend chmod 600.", cleanPath, perm) //nolint:gosec // G706: path from CLI flag, sanitized via filepath.Clean
+		}
+	}
+
 	var cfg Config
-	err = yaml.Unmarshal(data, &cfg)
-	if err != nil {
-		return nil, err
+	// Try strict parsing first to warn about unknown fields
+	strictDecoder := yaml.NewDecoder(bytes.NewReader(data), yaml.Strict())
+	if strictErr := strictDecoder.Decode(&cfg); strictErr != nil {
+		// Fall back to lenient parsing; warn about unknown fields
+		log.Printf("WARNING: Config has unknown fields: %v", strictErr)
+		cfg = Config{}
+		if err = yaml.Unmarshal(data, &cfg); err != nil {
+			return nil, err
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -526,8 +599,21 @@ func ParseDuration(s string) (time.Duration, error) {
 		if err != nil {
 			return 0, fmt.Errorf("invalid duration (days): %w", err)
 		}
+		if days < 0 {
+			return 0, fmt.Errorf("negative duration not allowed: %s", s)
+		}
+		if days > 365000 {
+			return 0, fmt.Errorf("duration too large: %sd (max 365000d)", daysStr)
+		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	// Fallback to time.ParseDuration
-	return time.ParseDuration(s)
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("negative duration not allowed: %s", s)
+	}
+	return d, nil
 }

@@ -3,6 +3,7 @@ package watchdog
 import (
 	"context"
 	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -34,9 +35,6 @@ type Watchdog struct {
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
-
-	monitorCancel context.CancelFunc
-	monitorWg     sync.WaitGroup
 }
 
 func NewWatchdog(configPath string, cfg *config.Config) *Watchdog {
@@ -76,12 +74,23 @@ func (w *Watchdog) Start(ctx context.Context) {
 
 func (w *Watchdog) run(ctx context.Context) {
 	defer w.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC] watchdog.run: %v\n%s", r, debug.Stack())
+		}
+	}()
 
+	type serviceProbe struct {
+		svc   config.Service
+		probe monitor.Probe
+	}
+	var serviceProbes []serviceProbe
+
+	firstRun := true
 	for {
 		// New monitoring context for this configuration run
 		monitorCtx, monitorCancel := context.WithCancel(ctx)
-		w.monitorCancel = monitorCancel
-		w.monitorWg = sync.WaitGroup{}
+		monitorWg := &sync.WaitGroup{}
 
 		currentCfg := w.shared.Get()
 
@@ -105,9 +114,9 @@ func (w *Watchdog) run(ctx context.Context) {
 			if t != nil {
 				if err := t.Initialize(); err != nil {
 					log.Printf("[Tunnel:%s] Failed to initialize: %v", name, err)
-				} else {
-					log.Printf("[Tunnel:%s] Initialized", name)
+					continue // Don't register failed tunnels
 				}
+				log.Printf("[Tunnel:%s] Initialized", name)
 				_ = w.tunnelRegistry.Register(t)
 			}
 		}
@@ -115,13 +124,15 @@ func (w *Watchdog) run(ctx context.Context) {
 		// Calculate and set success window for WireGuard tunnels
 		agent.SetupWireguardWindows(currentCfg, w.tunnelRegistry)
 
-		// Initialize all probes
-		type serviceProbe struct {
-			svc   config.Service
-			probe monitor.Probe
+		// Close old probes that hold cached resources
+		for _, sp := range serviceProbes {
+			if closer, ok := sp.probe.(interface{ Close() }); ok {
+				closer.Close()
+			}
 		}
-		var serviceProbes []serviceProbe
+		serviceProbes = nil
 
+		// Initialize all probes
 		for _, svc := range currentCfg.Services {
 			probe, err := agent.SetupProbe(svc, currentCfg, w.tunnelRegistry)
 			if err != nil {
@@ -132,13 +143,19 @@ func (w *Watchdog) run(ctx context.Context) {
 		}
 
 		// Start all service monitors
-		if StartingWindow > 0 {
+		if firstRun && StartingWindow > 0 {
 			log.Printf("Waiting %v for application to start...", StartingWindow)
-			time.Sleep(StartingWindow)
+			select {
+			case <-time.After(StartingWindow):
+			case <-ctx.Done():
+				monitorCancel()
+				return
+			}
+			firstRun = false
 		}
 		for _, sp := range serviceProbes {
-			w.monitorWg.Add(1)
-			go agent.RunServiceMonitor(monitorCtx, sp.svc, sp.probe, w.shared, w.tunnelRegistry, w.pusher, &w.monitorWg)
+			monitorWg.Add(1)
+			go agent.RunServiceMonitor(monitorCtx, sp.svc, sp.probe, w.shared, w.tunnelRegistry, w.pusher, monitorWg)
 		}
 
 		log.Printf("Agent components started with %d services", len(serviceProbes))
@@ -146,24 +163,29 @@ func (w *Watchdog) run(ctx context.Context) {
 		// Wait for reload or shutdown
 		select {
 		case <-ctx.Done():
-			w.monitorCancel()
-			w.monitorWg.Wait()
+			monitorCancel()
+			monitorWg.Wait()
 			return
 		case <-w.reloadChan:
 			log.Println("Restarting monitors with new configuration...")
-			w.monitorCancel()
-			w.monitorWg.Wait()
+			monitorCancel()
+			monitorWg.Wait()
 		}
 	}
 }
 
 func (w *Watchdog) watchConfigFile(ctx context.Context, watcher *fsnotify.Watcher) {
 	defer w.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC] watchConfigFile: %v\n%s", r, debug.Stack())
+		}
+	}()
 	defer func() { _ = watcher.Close() }()
-	w.watchLoop(ctx, watcher.Events, watcher.Errors)
+	w.watchLoop(ctx, watcher.Events, watcher.Errors, watcher)
 }
 
-func (w *Watchdog) watchLoop(ctx context.Context, events <-chan fsnotify.Event, errors <-chan error) {
+func (w *Watchdog) watchLoop(ctx context.Context, events <-chan fsnotify.Event, errors <-chan error, watcher *fsnotify.Watcher) {
 	var (
 		timer     *time.Timer
 		timerChan <-chan time.Time
@@ -180,13 +202,20 @@ func (w *Watchdog) watchLoop(ctx context.Context, events <-chan fsnotify.Event, 
 			if !ok {
 				return
 			}
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
 				log.Printf("Config file modified, scheduling reload in %v...", ReloadDelay)
 				if timer != nil {
 					timer.Stop()
 				}
 				timer = time.NewTimer(ReloadDelay)
 				timerChan = timer.C
+			}
+			if event.Op&fsnotify.Remove != 0 {
+				log.Printf("WARNING: Config file %s was removed. Running with current configuration.", w.configPath)
+				// Re-add the watch in case the file is recreated
+				if watcher != nil {
+					_ = watcher.Add(w.configPath)
+				}
 			}
 		case <-timerChan:
 			timerChan = nil // Reset timer chan
@@ -197,6 +226,12 @@ func (w *Watchdog) watchLoop(ctx context.Context, events <-chan fsnotify.Event, 
 				w.shared.Set(newCfg)
 				w.pusher.SetRateLimit(newCfg.Global.Notifier.RateLimit)
 				log.Printf("Config reloaded successfully with %d services", len(newCfg.Services))
+
+				activeServices := make(map[string]bool)
+				for _, svc := range newCfg.Services {
+					activeServices[svc.Name] = true
+				}
+				w.pusher.Cleanup(activeServices)
 
 				select {
 				case w.reloadChan <- struct{}{}:

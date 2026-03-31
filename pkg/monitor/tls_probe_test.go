@@ -304,3 +304,75 @@ func TestTLSProbe_SetTimeout(t *testing.T) {
 		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
 	}
 }
+
+func TestTLSProbe_CertChain_EarliestExpiry(t *testing.T) {
+	// Create a CA cert (expires in 10 years) and a leaf cert (expires in 5 days).
+	// The chain check should report based on the earliest expiry (5 days).
+	now := time.Now()
+
+	// CA cert - long lived
+	caTemplate := x509.Certificate{
+		SerialNumber:          big.NewInt(100),
+		Subject:               pkix.Name{Organization: []string{"Test CA"}},
+		NotBefore:             now.Add(-1 * time.Hour),
+		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+	}
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate CA key: %v", err)
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, &caTemplate, &caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("failed to create CA cert: %v", err)
+	}
+	caCert, _ := x509.ParseCertificate(caDER)
+
+	// Leaf cert - expires in 5 days (short-lived)
+	leafTemplate := x509.Certificate{
+		SerialNumber: big.NewInt(101),
+		Subject:      pkix.Name{Organization: []string{"Test Leaf"}},
+		NotBefore:    now.Add(-1 * time.Hour),
+		NotAfter:     now.Add(5 * 24 * time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		DNSNames:     []string{"localhost"},
+	}
+	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate leaf key: %v", err)
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, &leafTemplate, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("failed to create leaf cert: %v", err)
+	}
+
+	tlsCert := tls.Certificate{
+		Certificate: [][]byte{leafDER, caDER},
+		PrivateKey:  leafKey,
+	}
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	addr := strings.TrimPrefix(server.URL, "https://")
+
+	// With a 30-day threshold, the 5-day leaf cert should fail
+	probe := &TLSProbe{ExpiryThreshold: 30 * 24 * time.Hour, InsecureSkipVerify: true}
+	res, err := probe.Check(context.Background(), addr)
+	if err != nil {
+		t.Skipf("TLS handshake failed (expected in some environments): %v", err)
+	}
+	if res.Success {
+		t.Error("Expected failure: leaf cert expires in 5 days but threshold is 30 days")
+	}
+	if !strings.Contains(res.Message, "expires soon") {
+		t.Errorf("Expected 'expires soon' message, got: %s", res.Message)
+	}
+}

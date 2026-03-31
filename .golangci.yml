@@ -7,9 +7,12 @@ run:
 
 linters:
   enable:
+    - bodyclose     # Check for unclosed http responses
     - errcheck      # Check for unchecked errors
     - govet         # Vet examines Go source code
     - ineffassign   # Detect ineffectual assignments
+    - nestif        # Detect nested if statements that can be flattened
+    - noctx         # Detect passing http.Request.Context() or http.ResponseWriter without custom context
     - staticcheck   # Static analysis
     - unused        # Check for unused code
     - misspell      # Check for misspelled words
@@ -25,17 +28,11 @@ linters:
     revive:
       rules:
         - name: exported
-          disabled: true
-        - name: package-comments
+          severity: warning
           disabled: true
     govet:
-      enable:
-        - assign
-        - atomic
-        - bools
-        - buildtag
-        - nilfunc
-        - printf
+      disable:
+        - fieldalignment
     gosec:
       # G104 is often too noisy as it flags every unchecked error which errcheck already handles
       excludes:
@@ -52,6 +49,10 @@ linters:
       - linters:
           - revive
         text: "unused-parameter"
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 
 issues:
   max-issues-per-linter: 50

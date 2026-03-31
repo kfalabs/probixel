@@ -41,7 +41,17 @@ func run(ctx context.Context, configPath, pidFile string, delaySeconds int) erro
 		select {
 		case <-sigChan:
 			log.Println("Received shutdown signal, stopping agents...")
-			wd.Stop()
+			done := make(chan struct{})
+			go func() {
+				wd.Stop()
+				close(done)
+			}()
+			select {
+			case <-done:
+				log.Println("Graceful shutdown complete.")
+			case <-time.After(30 * time.Second):
+				log.Println("Shutdown timed out after 30s, forcing exit.")
+			}
 			cancel()
 		case <-ctx.Done():
 		}

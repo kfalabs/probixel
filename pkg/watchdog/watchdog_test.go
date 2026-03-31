@@ -29,7 +29,7 @@ func TestWatchdog_Lifecycle(t *testing.T) {
 
 	cfgStr := `
 global:
-  interval: "1s"
+  default_interval: "1s"
 services:
   - name: "Lifecycle Test"
     type: "host"
@@ -1249,7 +1249,7 @@ func TestWatchLoop_WatcherError(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		wd.watchLoop(ctx, eventChan, errChan)
+		wd.watchLoop(ctx, eventChan, errChan, nil)
 		close(done)
 	}()
 
@@ -1275,7 +1275,7 @@ func TestWatchLoop_ErrorsChanClosed(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		wd.watchLoop(context.Background(), eventChan, errChan)
+		wd.watchLoop(context.Background(), eventChan, errChan, nil)
 		close(done)
 	}()
 
@@ -1383,6 +1383,240 @@ services:
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchConfigFile did not return")
+	}
+}
+
+func TestWatchdog_RunRespectsContextCancelDuringStartingWindow(t *testing.T) {
+	// Test that run() returns when context is cancelled during StartingWindow wait
+	oldWindow := StartingWindow
+	StartingWindow = 5 * time.Second // long enough that we cancel before it expires
+	defer func() { StartingWindow = oldWindow }()
+
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "100ms"},
+		Services: []config.Service{
+			{
+				Name:     "Starting Window Cancel Test",
+				Type:     "host",
+				Interval: "100ms",
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					Success: config.EndpointConfig{URL: MockAlertServerURL},
+				},
+			},
+		},
+	}
+
+	wd := NewWatchdog("dummy.yaml", cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	wd.wg.Add(1)
+	go wd.run(ctx)
+
+	// Give run() time to enter the StartingWindow select
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel context - should cause run() to return before the 5s window
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		wd.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - run() exited promptly on context cancellation
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() did not return after context cancellation during StartingWindow")
+	}
+}
+
+func TestWatchLoop_RemoveEvent(t *testing.T) {
+	// Test that watchLoop handles fsnotify.Remove events (logs warning, re-adds watch)
+	cfg := &config.Config{}
+	wd := NewWatchdog("dummy.yaml", cfg)
+
+	eventChan := make(chan fsnotify.Event, 1)
+	errChan := make(chan error)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Send a Remove event
+	eventChan <- fsnotify.Event{
+		Name: "dummy.yaml",
+		Op:   fsnotify.Remove,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wd.watchLoop(ctx, eventChan, errChan, nil) // nil watcher is handled
+		close(done)
+	}()
+
+	// Give it time to process the event
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchLoop did not return")
+	}
+}
+
+func TestWatchLoop_CreateEvent(t *testing.T) {
+	// Test that watchLoop handles fsnotify.Create events (triggers reload like Write)
+	oldDelay := ReloadDelay
+	ReloadDelay = 50 * time.Millisecond
+	defer func() { ReloadDelay = oldDelay }()
+
+	configFile, err := os.CreateTemp("", "create_event_test_*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := configFile.Name()
+	defer func() { _ = os.Remove(configPath) }()
+
+	cfgStr := fmt.Sprintf(`
+global:
+  default_interval: "50ms"
+services:
+  - name: "Create Event Test"
+    type: "host"
+    interval: "50ms"
+    retries: 0
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "%s"
+`, MockAlertServerURL)
+	if _, err := configFile.Write([]byte(cfgStr)); err != nil {
+		t.Fatal(err)
+	}
+	_ = configFile.Close()
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	wd := NewWatchdog(configPath, cfg)
+
+	eventChan := make(chan fsnotify.Event, 1)
+	errChan := make(chan error)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		wd.watchLoop(ctx, eventChan, errChan, nil)
+		close(done)
+	}()
+
+	// Send a Create event - should schedule reload just like Write
+	eventChan <- fsnotify.Event{
+		Name: configPath,
+		Op:   fsnotify.Create,
+	}
+
+	// Wait for the timer to fire
+	time.Sleep(200 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchLoop did not return")
+	}
+}
+
+func TestWatchdog_WatchConfigFilePanicRecovery(t *testing.T) {
+	// Test the panic recovery path in watchConfigFile by passing a nil watcher.
+	// Accessing watcher.Events on a nil *fsnotify.Watcher will panic,
+	// and the recover() defer should handle it gracefully.
+	cfg := &config.Config{}
+	wd := NewWatchdog("dummy.yaml", cfg)
+
+	ctx := context.Background()
+	wd.wg.Add(1)
+
+	// This will panic inside watchConfigFile when it tries to access nil watcher's fields.
+	// The defer recover() should catch it.
+	go wd.watchConfigFile(ctx, nil)
+
+	done := make(chan struct{})
+	go func() {
+		wd.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - panic was recovered
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchConfigFile did not return after panic")
+	}
+}
+
+func TestWatchdog_OldProbesCleanedUpOnReload(t *testing.T) {
+	// Test that old probes implementing Close() are cleaned up on reload
+	configFile, err := os.CreateTemp("", "probe_cleanup_test_*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := configFile.Name()
+	defer func() { _ = os.Remove(configPath) }()
+
+	cfgStr := fmt.Sprintf(`
+global:
+  default_interval: "100ms"
+services:
+  - name: "Cleanup Test"
+    type: "host"
+    interval: "100ms"
+    retries: 0
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "%s"
+`, MockAlertServerURL)
+	if err := os.WriteFile(configPath, []byte(cfgStr), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	wd := NewWatchdog(configPath, cfg)
+	done := make(chan struct{})
+	go func() {
+		wd.Start(context.Background())
+		close(done)
+	}()
+
+	// Let it start and run first iteration
+	time.Sleep(100 * time.Millisecond)
+
+	// Trigger a reload - the Close interface on old probes should be called
+	select {
+	case wd.reloadChan <- struct{}{}:
+	default:
+	}
+
+	// Let reload complete
+	time.Sleep(100 * time.Millisecond)
+
+	wd.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watchdog did not stop")
 	}
 }
 

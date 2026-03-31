@@ -7,6 +7,7 @@ import (
 	"probixel/pkg/config"
 	"probixel/pkg/tunnels"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -18,6 +19,9 @@ type SSHProbe struct {
 	Timeout     time.Duration
 	tunnel      tunnels.Tunnel
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	signer      ssh.Signer // cached parsed private key
+	signerOnce  sync.Once
+	signerErr   error
 }
 
 func (p *SSHProbe) SetTunnel(t tunnels.Tunnel) {
@@ -91,19 +95,7 @@ func (p *SSHProbe) checkOne(ctx context.Context, target string) Result {
 
 	if !authRequired {
 		// Just check TCP connection
-		var conn net.Conn
-		var err error
-		if p.DialContext != nil {
-			conn, err = p.DialContext(ctx, "tcp", host)
-		} else {
-			timeout := p.Timeout
-			if timeout == 0 {
-				timeout = 5 * time.Second
-			}
-			d := net.Dialer{Timeout: timeout}
-			conn, err = d.DialContext(ctx, "tcp", host)
-		}
-
+		conn, err := p.dialSSH(ctx, host)
 		if err != nil {
 			return Result{Success: false, Message: err.Error()}
 		}
@@ -121,11 +113,13 @@ func (p *SSHProbe) checkOne(ctx context.Context, target string) Result {
 		authMethods = append(authMethods, ssh.Password(cfg.Password))
 	}
 	if cfg.PrivateKey != "" {
-		signer, err := ssh.ParsePrivateKey([]byte(cfg.PrivateKey))
-		if err != nil {
-			return Result{Success: false, Message: fmt.Sprintf("invalid private key: %v", err)}
+		p.signerOnce.Do(func() {
+			p.signer, p.signerErr = ssh.ParsePrivateKey([]byte(cfg.PrivateKey))
+		})
+		if p.signerErr != nil {
+			return Result{Success: false, Message: fmt.Sprintf("invalid private key: %v", p.signerErr)}
 		}
-		authMethods = append(authMethods, ssh.PublicKeys(signer))
+		authMethods = append(authMethods, ssh.PublicKeys(p.signer))
 	}
 
 	timeout := p.Timeout
@@ -140,14 +134,7 @@ func (p *SSHProbe) checkOne(ctx context.Context, target string) Result {
 		Timeout:         timeout,
 	}
 
-	var conn net.Conn
-	var err error
-	if p.DialContext != nil {
-		conn, err = p.DialContext(ctx, "tcp", host)
-	} else {
-		d := net.Dialer{Timeout: timeout}
-		conn, err = d.DialContext(ctx, "tcp", host)
-	}
+	conn, err := p.dialSSH(ctx, host)
 	if err != nil {
 		return Result{Success: false, Message: err.Error()}
 	}
@@ -162,6 +149,19 @@ func (p *SSHProbe) checkOne(ctx context.Context, target string) Result {
 	_ = client.Close()
 
 	return Result{Success: true, Duration: time.Since(start), Message: "Login OK", Target: target}
+}
+
+func (p *SSHProbe) dialSSH(ctx context.Context, host string) (net.Conn, error) {
+	if p.DialContext != nil {
+		return p.DialContext(ctx, "tcp", host)
+	}
+
+	timeout := p.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	d := net.Dialer{Timeout: timeout}
+	return d.DialContext(ctx, "tcp", host)
 }
 
 func (p *SSHProbe) SetTimeout(timeout time.Duration) {

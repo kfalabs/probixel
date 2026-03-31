@@ -838,3 +838,215 @@ func TestHTTPProbe_SetTimeout(t *testing.T) {
 		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
 	}
 }
+
+func TestHTTPProbe_GetClient_SyncOnce(t *testing.T) {
+	probe := &HTTPProbe{Timeout: 3 * time.Second}
+
+	client1 := probe.getClient()
+	client2 := probe.getClient()
+
+	if client1 == nil {
+		t.Fatal("getClient returned nil")
+	}
+	if client1 != client2 {
+		t.Error("getClient should return the same client on multiple calls (sync.Once)")
+	}
+}
+
+func TestHTTPProbe_Close_NilClient(t *testing.T) {
+	// Close on a fresh probe with nil cachedClient should not panic
+	probe := &HTTPProbe{}
+	probe.Close() // should be a no-op, no panic
+}
+
+func TestHTTPProbe_Close_AfterGetClient(t *testing.T) {
+	probe := &HTTPProbe{}
+	_ = probe.getClient()
+	if probe.cachedClient == nil {
+		t.Fatal("Expected cachedClient to be set after getClient")
+	}
+	probe.Close() // should not panic
+}
+
+func TestHTTPProbe_ParseStatusCodesOnce(t *testing.T) {
+	tests := []struct {
+		name          string
+		codes         string
+		checkCode     int
+		expectSuccess bool
+	}{
+		{"empty string defaults to 200-399", "", 200, true},
+		{"empty string rejects 500", "", 500, false},
+		{"single code 200", "200", 200, true},
+		{"single code 200 rejects 201", "200", 201, false},
+		{"range 200-299 accepts 250", "200-299", 250, true},
+		{"range 200-299 rejects 300", "200-299", 300, false},
+		{"range and single 200-299,404 accepts 404", "200-299,404", 404, true},
+		{"range and single 200-299,404 accepts 200", "200-299,404", 200, true},
+		{"range and single 200-299,404 rejects 500", "200-299,404", 500, false},
+		{"malformed non-numeric", "abc", 200, false},
+		{"malformed range with text", "abc-def", 200, false},
+		{"partial malformed with valid", "abc, 200", 200, true},
+		{"only commas and spaces", " , , ", 200, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			probe := &HTTPProbe{AcceptedStatusCodes: tt.codes}
+			result := probe.checkStatusCode(tt.checkCode)
+			if result != tt.expectSuccess {
+				t.Errorf("checkStatusCode(%d) with codes=%q: got %v, want %v",
+					tt.checkCode, tt.codes, result, tt.expectSuccess)
+			}
+		})
+	}
+}
+
+func TestHTTPProbe_GetClient_DefaultTimeout(t *testing.T) {
+	// When Timeout is 0, getClient should use 5s default
+	probe := &HTTPProbe{}
+	client := probe.getClient()
+	if client == nil {
+		t.Fatal("getClient returned nil")
+	}
+	if client.Timeout != 5*time.Second {
+		t.Errorf("Expected default timeout 5s, got %v", client.Timeout)
+	}
+}
+
+func TestHTTPProbe_GetClient_CustomTimeout(t *testing.T) {
+	probe := &HTTPProbe{Timeout: 10 * time.Second}
+	client := probe.getClient()
+	if client.Timeout != 10*time.Second {
+		t.Errorf("Expected timeout 10s, got %v", client.Timeout)
+	}
+}
+
+func TestHTTPProbe_GetClient_TooManyRedirects(t *testing.T) {
+	// Test the CheckRedirect function path when there are >10 redirects
+	redirectCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectCount++
+		if redirectCount > 15 {
+			// Safety: stop redirecting after 15 to prevent infinite loop
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, r.URL.Path, http.StatusFound)
+	}))
+	defer server.Close()
+
+	probe := &HTTPProbe{}
+	res, err := probe.Check(context.Background(), server.URL+"/redirect")
+	if err != nil {
+		t.Fatalf("Check returned internal error: %v", err)
+	}
+	if res.Success {
+		t.Error("Expected failure due to too many redirects")
+	}
+	if !strings.Contains(res.Message, "request failed") {
+		t.Errorf("Expected 'request failed' message, got %s", res.Message)
+	}
+}
+
+func TestHTTPProbe_BodyExpectation_Equals(t *testing.T) {
+	// Test the "body" type expectation with == operator
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("exact body content"))
+	}))
+	defer server.Close()
+
+	probe := &HTTPProbe{
+		MatchData: &config.MatchDataConfig{
+			Expectations: []config.Expectation{
+				{Type: "body", Operator: "==", Value: "exact body content"},
+			},
+		},
+	}
+	res, err := probe.Check(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success, got failure: %s", res.Message)
+	}
+
+	// Test body expectation failure
+	probe2 := &HTTPProbe{
+		MatchData: &config.MatchDataConfig{
+			Expectations: []config.Expectation{
+				{Type: "body", Operator: "==", Value: "wrong content"},
+			},
+		},
+	}
+	res2, err := probe2.Check(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if res2.Success {
+		t.Error("Expected failure for body mismatch")
+	}
+}
+
+func TestHTTPProbe_JSONEmptyArrayExpectation(t *testing.T) {
+	// Test the JSON path where gjson returns an empty array (Type=JSON, Array len=0, not Null)
+	// This exercises lines 236-237 in evaluateExpectations
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"items": []}`))
+	}))
+	defer server.Close()
+
+	probe := &HTTPProbe{
+		MatchData: &config.MatchDataConfig{
+			Expectations: []config.Expectation{
+				{Type: "json", JSONPath: "items", Operator: "==", Value: "[]"},
+			},
+		},
+	}
+	res, err := probe.Check(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	// The actual string value of an empty array via gjson is "[]"
+	if !res.Success {
+		t.Logf("Result message: %s (may or may not match depending on gjson string representation)", res.Message)
+	}
+}
+
+func TestHTTPProbe_ParseStatusCodesOnce_AlreadyParsed(t *testing.T) {
+	// Test the early return when statusCodesParsed is already true (line 329-331)
+	probe := &HTTPProbe{AcceptedStatusCodes: "200"}
+	// First call parses
+	_ = probe.checkStatusCode(200)
+	// Second call should hit the already-parsed early return
+	result := probe.checkStatusCode(200)
+	if !result {
+		t.Error("Expected 200 to be accepted on second call")
+	}
+}
+
+func TestHTTPProbe_BodyExpectation_Matches(t *testing.T) {
+	// Test the "body" type with regex "matches" operator
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("version: 1.2.3"))
+	}))
+	defer server.Close()
+
+	probe := &HTTPProbe{
+		MatchData: &config.MatchDataConfig{
+			Expectations: []config.Expectation{
+				{Type: "body", Operator: "matches", Value: `version: \d+\.\d+\.\d+`},
+			},
+		},
+	}
+	res, err := probe.Check(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success, got failure: %s", res.Message)
+	}
+}

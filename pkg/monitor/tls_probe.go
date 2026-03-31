@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"strings"
@@ -72,16 +73,17 @@ func (p *TLSProbe) Check(ctx context.Context, target string) (Result, error) {
 			}
 
 			res, err := p.checkTarget(ctx, t, threshold)
-			if err != nil || !res.Success {
-				errMsg := fmt.Sprintf("target %s failed", t)
-				if err != nil {
-					errMsg = fmt.Sprintf("%s: %v", errMsg, err)
-				} else {
-					errMsg = fmt.Sprintf("%s: %s", errMsg, res.Message)
-				}
+			if err != nil {
 				return Result{
 					Success:   false,
-					Message:   errMsg,
+					Message:   fmt.Sprintf("target %s failed: %v", t, err),
+					Timestamp: startTotal,
+				}, nil
+			}
+			if !res.Success {
+				return Result{
+					Success:   false,
+					Message:   fmt.Sprintf("target %s failed: %s", t, res.Message),
 					Timestamp: startTotal,
 				}, nil
 			}
@@ -137,15 +139,19 @@ func (p *TLSProbe) checkTarget(ctx context.Context, target string, threshold tim
 
 	dialer := p.DialContext
 	if dialer == nil {
-		timeout := p.Timeout
-		if timeout == 0 {
-			timeout = 5 * time.Second
-		}
-		d := net.Dialer{Timeout: timeout}
+		d := net.Dialer{}
 		dialer = d.DialContext
 	}
 
-	rawConn, err := dialer(ctx, "tcp", target)
+	// Enforce timeout on dial regardless of dialer source
+	timeout := p.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	dialCtx, dialCancel := context.WithTimeout(ctx, timeout)
+	defer dialCancel()
+
+	rawConn, err := dialer(dialCtx, "tcp", target)
 	if err != nil {
 		return Result{}, err
 	}
@@ -154,7 +160,7 @@ func (p *TLSProbe) checkTarget(ctx context.Context, target string, threshold tim
 		InsecureSkipVerify: p.InsecureSkipVerify, // nolint:gosec // deliberate feature
 		ServerName:         host,
 	})
-	if err := conn.HandshakeContext(ctx); err != nil {
+	if err := conn.HandshakeContext(dialCtx); err != nil {
 		_ = rawConn.Close()
 		return Result{}, err
 	}
@@ -168,14 +174,22 @@ func (p *TLSProbe) checkTarget(ctx context.Context, target string, threshold tim
 		}, nil
 	}
 
-	cert := conn.ConnectionState().PeerCertificates[0]
-	expiry := cert.NotAfter
-	remaining := time.Until(expiry)
+	// Check ALL certificates in chain for earliest expiry
+	var earliestExpiry time.Time
+	var expiringCert *x509.Certificate
+	for _, cert := range conn.ConnectionState().PeerCertificates {
+		if earliestExpiry.IsZero() || cert.NotAfter.Before(earliestExpiry) {
+			earliestExpiry = cert.NotAfter
+			expiringCert = cert
+		}
+	}
+
+	remaining := time.Until(earliestExpiry)
 
 	if remaining < 0 {
 		return Result{
 			Success:   false,
-			Message:   fmt.Sprintf("certificate EXPIRED on %s", expiry.Format("2006-01-02")),
+			Message:   fmt.Sprintf("certificate EXPIRED on %s", expiringCert.NotAfter.Format("2006-01-02")),
 			Timestamp: start,
 		}, nil
 	}

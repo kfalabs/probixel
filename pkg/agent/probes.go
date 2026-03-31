@@ -12,6 +12,46 @@ import (
 	"probixel/pkg/tunnels"
 )
 
+func setupTunnelDialer(probe monitor.Probe, registry *tunnels.Registry, tunnelName string) {
+	t, ok := registry.Get(tunnelName)
+	if !ok {
+		return
+	}
+
+	dialer := func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := t.DialContext(ctx, network, address)
+		if err != nil {
+			if t.IsStabilized() {
+				t.ReportFailure()
+			}
+		}
+		return conn, err
+	}
+
+	switch p := probe.(type) {
+	case *monitor.HTTPProbe:
+		p.DialContext = dialer
+	case *monitor.TCPProbe:
+		p.DialContext = dialer
+	case *monitor.PingProbe:
+		p.DialContext = dialer
+	case *monitor.DNSProbe:
+		p.DialContext = dialer
+	case *monitor.UDPProbe:
+		p.DialContext = dialer
+	case *monitor.TLSProbe:
+		p.DialContext = dialer
+	case *monitor.SSHProbe:
+		p.DialContext = dialer
+	case *monitor.DockerProbe:
+		p.DialContext = dialer
+	}
+
+	if tunneler, ok := probe.(monitor.Tunneler); ok {
+		tunneler.SetTunnel(t)
+	}
+}
+
 func SetupWireguardWindows(cfg *config.Config, registry *tunnels.Registry) {
 	tunnelMaxIntervals := make(map[string]time.Duration)
 	for _, svc := range cfg.Services {
@@ -103,40 +143,7 @@ func SetupProbe(svc config.Service, cfg *config.Config, registry *tunnels.Regist
 	}
 
 	if svc.Tunnel != "" {
-		if t, ok := registry.Get(svc.Tunnel); ok {
-			dialer := func(ctx context.Context, network, address string) (net.Conn, error) {
-				conn, err := t.DialContext(ctx, network, address)
-				if err != nil {
-					if t.IsStabilized() {
-						t.ReportFailure()
-					}
-				}
-				return conn, err
-			}
-
-			switch p := probe.(type) {
-			case *monitor.HTTPProbe:
-				p.DialContext = dialer
-			case *monitor.TCPProbe:
-				p.DialContext = dialer
-			case *monitor.PingProbe:
-				p.DialContext = dialer
-			case *monitor.DNSProbe:
-				p.DialContext = dialer
-			case *monitor.UDPProbe:
-				p.DialContext = dialer
-			case *monitor.TLSProbe:
-				p.DialContext = dialer
-			case *monitor.SSHProbe:
-				p.DialContext = dialer
-			case *monitor.DockerProbe:
-				p.DialContext = dialer
-			}
-
-			if tunneler, ok := probe.(monitor.Tunneler); ok {
-				tunneler.SetTunnel(t)
-			}
-		}
+		setupTunnelDialer(probe, registry, svc.Tunnel)
 	}
 
 	if init, ok := probe.(monitor.Initializer); ok {
