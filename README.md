@@ -379,6 +379,14 @@ Verifies UDP port reachability.
   1. **Built-in ICMP** — Used when routed through a tunnel with `DialContext` support
   2. **Remote SSH ping** — Falls back to executing `ping` on the remote host when ICMP is unsupported (e.g., SSH tunnels)
   3. **System `ping` executable** — Default when no tunnel is set (cross-platform: macOS, Linux, Windows)
+> [!IMPORTANT]
+> **Docker Ping Support**: The Probixel Docker image uses a rootless (non-root) container. To use ping probes, you must enable unprivileged ICMP sockets by adding the following `sysctls` setting to your `docker-compose.yml`:
+> ```yaml
+> sysctls:
+>   net.ipv4.ping_group_range: "0 2147483647"
+> ```
+> This is already included in the [docker-compose.example.yml](docker/docker-compose.example.yml). Without this setting, ping probes will fail with permission errors inside the container.
+
 - **Example**:
   ```yaml
   - name: "Ping Targets"
@@ -545,7 +553,7 @@ services:
 ```
 
 > [!NOTE]
-> **Automatic Trimming**: All probes automatically trim leading and trailing whitespace from target strings. For probes supporting multi-targets (DNS, Docker, Ping, TCP, UDP), each individual target in the comma-separated list is trimmed (e.g., `"8.8.8.8,  1.1.1.1"` is parsed correctly).
+> **Automatic Trimming**: All probes automatically trim leading and trailing whitespace from target strings. For probes supporting multi-targets (DNS, Docker, Ping, TCP, TLS, UDP), each individual target in the comma-separated list is trimmed (e.g., `"8.8.8.8,  1.1.1.1"` is parsed correctly).
 >
 > **Target Mode Support**: The `target_mode` setting is only applicable to probes that support multiple targets (`DNS`, `Docker`, `Ping`, `TCP`, `TLS`, `UDP`). The `HTTP`, `Host`, `SSH`, and `WireGuard` probes do not support multi-targets or `target_mode` in a meaningful way.
 
