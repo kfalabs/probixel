@@ -11,12 +11,25 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	probing "github.com/prometheus-community/pro-bing"
 )
+
+// canPing checks whether raw ICMP sockets are available (they aren't in most CI environments).
+func canPing() bool {
+	p, err := probing.NewPinger("127.0.0.1")
+	if err != nil {
+		return false
+	}
+	p.Count = 1
+	p.Timeout = 1 * time.Second
+	return p.Run() == nil
+}
 
 func TestIntegration_AgentLoop(t *testing.T) {
 	// Build the agent binary
 	agentBin := filepath.Join(os.TempDir(), "probixel-test")
-	buildCmd := exec.Command("go", "build", "-o", agentBin, ".") //nolint:gosec // G204: Building test binary with variable path is safe in tests
+	buildCmd := exec.CommandContext(context.Background(), "go", "build", "-o", agentBin, ".") //nolint:gosec // G204: Building test binary with variable path is safe in tests
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
@@ -25,6 +38,11 @@ func TestIntegration_AgentLoop(t *testing.T) {
 	// Start a mock server to act as:
 	//    The Target (HTTP 200)
 	//    The Alert Endpoint (Receives POST)
+	pingAvailable := canPing()
+	if !pingAvailable {
+		t.Log("Ping not available (no raw socket permission), skipping ping assertions")
+	}
+
 	httpAlertReceived := make(chan bool, 1)
 	pingAlertReceived := make(chan bool, 1)
 	udpAlertReceived := make(chan bool, 1)
@@ -92,10 +110,26 @@ func TestIntegration_AgentLoop(t *testing.T) {
 	}
 	defer func() { _ = os.Remove(configFile.Name()) }()
 
+	pingServiceConfig := ""
+	if pingAvailable {
+		pingServiceConfig = fmt.Sprintf(`
+  - name: "Integration Ping Service"
+    type: "ping"
+    interval: "1s"
+    timeout: "500ms"
+    retries: 0
+    targets: ["127.0.0.1"]
+    target_mode: "any"
+    ping: {}
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "%s/alert/ping-success?duration={%%%%duration%%%%}"
+`, ts.URL)
+	}
+
 	configContent := fmt.Sprintf(`
 global:
-  headers:
-    Env: IntegrationTest
   notifier:
     rate_limit: "0"
 
@@ -128,32 +162,20 @@ services:
       failure:
         url: "%[1]s/alert/failure?duration={%%duration%%}"
 
-  - name: "Integration Ping Service"
-    type: "ping"
-    interval: "1s"
-    timeout: "500ms"
-    retries: 0
-    targets: ["127.0.0.1"]
-    target_mode: "any"
-    ping: {}
-    monitor_endpoint:
-      retries: 0
-      success:
-        url: "%[1]s/alert/ping-success?duration={%%duration%%}"
-
+%[3]s
   - name: "Integration UDP Service"
     type: "udp"
     interval: "1s"
     timeout: "500ms"
     retries: 0
-    targets: ["127.0.0.1:%d"]
+    targets: ["127.0.0.1:%[2]d"]
     target_mode: "any"
     udp: {}
     monitor_endpoint:
       retries: 0
       success:
         url: "%[1]s/alert/udp-success?duration={%%duration%%}"
-`, ts.URL, udpPort)
+`, ts.URL, udpPort, pingServiceConfig)
 
 	if _, err := configFile.Write([]byte(configContent)); err != nil {
 		t.Fatal(err)
@@ -174,7 +196,7 @@ services:
 	// Wait for Alerts (fast with -delay 0)
 	timeout := time.After(5 * time.Second)
 	gotHTTP := false
-	gotPing := false
+	gotPing := !pingAvailable // treat as already received when ping is unavailable
 	gotUDP := false
 
 	for !gotHTTP || !gotPing || !gotUDP {
@@ -201,7 +223,7 @@ func TestIntegration_HealthCheck(t *testing.T) {
 
 	// Build the agent binary
 	agentBin := filepath.Join(tmpDir, "probixel-health-test")
-	buildCmd := exec.Command("go", "build", "-o", agentBin, ".")
+	buildCmd := exec.CommandContext(context.Background(), "go", "build", "-o", agentBin, ".") //nolint:gosec // G204: Building test binary with variable path is safe in tests
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
@@ -225,13 +247,13 @@ services:
 	}
 
 	// Verify healthcheck fails when agent is not running
-	healthCmd := exec.Command(agentBin, "-health", "-pidfile", pidFile)
+	healthCmd := exec.CommandContext(context.Background(), agentBin, "-health", "-pidfile", pidFile) //nolint:gosec // G204: Running test binary
 	if err := healthCmd.Run(); err == nil {
 		t.Error("Expected healthcheck to fail when agent is not running, but it succeeded")
 	}
 
 	// Start the agent
-	agentCmd := exec.Command(agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0") //nolint:gosec // G204: test binary
+	agentCmd := exec.CommandContext(context.Background(), agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0") //nolint:gosec // G204: test binary
 	if err := agentCmd.Start(); err != nil {
 		t.Fatalf("Failed to start agent: %v", err)
 	}
@@ -240,7 +262,7 @@ services:
 	time.Sleep(1 * time.Second)
 
 	// Verify healthcheck succeeds when agent is running
-	healthCmd = exec.Command(agentBin, "-health", "-pidfile", pidFile)
+	healthCmd = exec.CommandContext(context.Background(), agentBin, "-health", "-pidfile", pidFile) //nolint:gosec // G204: test binary
 	if out, err := healthCmd.CombinedOutput(); err != nil {
 		t.Errorf("Expected healthcheck to succeed when agent is running, but it failed: %v\nOutput: %s", err, out)
 	}
@@ -256,7 +278,7 @@ services:
 	_ = os.Remove(pidFile)
 
 	// Verify healthcheck fails again
-	healthCmd = exec.Command(agentBin, "-health", "-pidfile", pidFile)
+	healthCmd = exec.CommandContext(context.Background(), agentBin, "-health", "-pidfile", pidFile) //nolint:gosec // G204: test binary
 	if err := healthCmd.Run(); err == nil {
 		t.Error("Expected healthcheck to fail after agent stopped, but it succeeded")
 	}
@@ -265,7 +287,7 @@ services:
 func TestIntegration_InvalidConfig(t *testing.T) {
 	// Build the agent binary
 	agentBin := filepath.Join(os.TempDir(), "probixel-invalid-cfg-test")
-	buildCmd := exec.Command("go", "build", "-o", agentBin, ".")
+	buildCmd := exec.CommandContext(context.Background(),"go", "build", "-o", agentBin, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
@@ -283,7 +305,7 @@ func TestIntegration_InvalidConfig(t *testing.T) {
 	pidFile := filepath.Join(os.TempDir(), "probixel-invalid.pid")
 	defer func() { _ = os.Remove(pidFile) }()
 
-	cmd := exec.Command(agentBin, "-config", configPath, "-pidfile", pidFile)
+	cmd := exec.CommandContext(context.Background(),agentBin, "-config", configPath, "-pidfile", pidFile)
 	err = cmd.Run()
 	if err == nil {
 		t.Error("Expected agent to fail with invalid config, but it succeeded")
@@ -293,14 +315,14 @@ func TestIntegration_InvalidConfig(t *testing.T) {
 func TestIntegration_MissingConfigFile(t *testing.T) {
 	// Build the agent binary
 	agentBin := filepath.Join(os.TempDir(), "probixel-missing-cfg-test")
-	buildCmd := exec.Command("go", "build", "-o", agentBin, ".")
+	buildCmd := exec.CommandContext(context.Background(),"go", "build", "-o", agentBin, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
 	defer func() { _ = os.Remove(agentBin) }()
 
 	// Run agent with missing config - should fail
-	cmd := exec.Command(agentBin, "-config", "/nonexistent/path/config.yaml")
+	cmd := exec.CommandContext(context.Background(),agentBin, "-config", "/nonexistent/path/config.yaml")
 	err := cmd.Run()
 	if err == nil {
 		t.Error("Expected agent to fail with missing config file, but it succeeded")
@@ -310,7 +332,7 @@ func TestIntegration_MissingConfigFile(t *testing.T) {
 func TestIntegration_GracefulShutdown(t *testing.T) {
 	// Build the agent binary
 	agentBin := filepath.Join(os.TempDir(), "probixel-shutdown-test")
-	buildCmd := exec.Command("go", "build", "-o", agentBin, ".")
+	buildCmd := exec.CommandContext(context.Background(),"go", "build", "-o", agentBin, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
@@ -336,7 +358,7 @@ services:
 	pidFile := filepath.Join(os.TempDir(), "probixel-shutdown.pid")
 	defer func() { _ = os.Remove(pidFile) }()
 
-	cmd := exec.Command(agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0")
+	cmd := exec.CommandContext(context.Background(),agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start agent: %v", err)
 	}

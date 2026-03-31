@@ -58,21 +58,7 @@ func (p *UDPProbe) Check(ctx context.Context, target string) (Result, error) {
 			}
 
 			start := time.Now()
-			var conn net.Conn
-			var err error
-
-			// Use mocked DialContext if available, else net.Dialer
-			if p.DialContext != nil {
-				conn, err = p.DialContext(ctx, "udp", t)
-			} else {
-				timeout := p.Timeout
-				if timeout == 0 {
-					timeout = 5 * time.Second
-				}
-				d := net.Dialer{Timeout: timeout}
-				conn, err = d.DialContext(ctx, "udp", t)
-			}
-
+			conn, err := p.dialUDP(ctx, t)
 			if err != nil {
 				return Result{
 					Success:   false,
@@ -117,21 +103,7 @@ func (p *UDPProbe) Check(ctx context.Context, target string) (Result, error) {
 		}
 
 		start := time.Now()
-		var conn net.Conn
-		var err error
-
-		// Use mocked DialContext if available, else net.Dialer
-		if p.DialContext != nil {
-			conn, err = p.DialContext(ctx, "udp", t)
-		} else {
-			timeout := p.Timeout
-			if timeout == 0 {
-				timeout = 5 * time.Second
-			}
-			d := net.Dialer{Timeout: timeout}
-			conn, err = d.DialContext(ctx, "udp", t)
-		}
-
+		conn, err := p.dialUDP(ctx, t)
 		if err != nil {
 			lastErr = err
 			continue
@@ -164,6 +136,19 @@ func (p *UDPProbe) Check(ctx context.Context, target string) (Result, error) {
 		Timestamp: startTotal,
 	}, nil
 }
+func (p *UDPProbe) dialUDP(ctx context.Context, target string) (net.Conn, error) {
+	if p.DialContext != nil {
+		return p.DialContext(ctx, "udp", target)
+	}
+
+	timeout := p.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	d := net.Dialer{Timeout: timeout}
+	return d.DialContext(ctx, "udp", target)
+}
+
 func (p *UDPProbe) SetTimeout(timeout time.Duration) {
 	p.Timeout = timeout
 }

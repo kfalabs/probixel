@@ -123,6 +123,34 @@ services:
     network_mode: "host"
 ```
 
+## Ping Probe in Docker
+
+The ping probe uses ICMP sockets which require kernel permission. The image runs as a
+non-root user (UID 65532), so ICMP access depends on the host's `net.ipv4.ping_group_range`
+sysctl. The probe automatically tries privileged (raw) ICMP first, then falls back to
+unprivileged (UDP) ICMP.
+
+If ping probes fail with "permission denied", allow unprivileged ICMP for all users:
+
+```bash
+docker run -d \
+  --name probixel \
+  --sysctl net.ipv4.ping_group_range="0 2147483647" \
+  -v $(pwd)/docker/config.yaml:/app/config.yaml:ro \
+  kfalabs/probixel:latest
+```
+
+Or in docker-compose.yml:
+```yaml
+services:
+  probixel:
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+```
+
+> **Note:** Docker Desktop (macOS/Windows) typically allows unprivileged ICMP by default.
+> This setting is mainly needed on Linux hosts where `ping_group_range` defaults to `1 0`.
+
 ## Advanced Usage
 
 ### Custom Entrypoint
@@ -133,17 +161,24 @@ docker run -it --rm \
   -config /app/config.yaml -verbose
 ```
 
-### Debug Mode (with shell access)
-If you need to debug, modify the Dockerfile final stage to use Alpine with shell:
+### Debug Mode
+The production image uses a distroless base with no shell. To debug, you can use logs:
+```bash
+docker logs -f probixel
+```
+
+If you need shell access, build a debug image by replacing the final stage base with Alpine:
 ```dockerfile
-FROM alpine:latest
-# ... rest of Dockerfile
-CMD ["/bin/sh"]
+FROM alpine:3 AS debug
+RUN apk --no-cache add ca-certificates tzdata
+COPY --from=builder /build/probixel /app/probixel
+ENTRYPOINT ["/bin/sh"]
 ```
 
 Then run:
 ```bash
-docker run -it --rm kfalabs/probixel:latest /bin/sh
+docker build --target debug -t probixel:debug -f docker/Dockerfile .
+docker run -it --rm probixel:debug
 ```
 
 ### Resource Limits

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"probixel/pkg/notifier"
 	"probixel/pkg/tunnels"
 )
+
+func TestMain(m *testing.M) {
+	RetryBackoff = 0 // Disable retry backoff in tests for speed
+	os.Exit(m.Run())
+}
 
 func ptrInt(i int) *int {
 	return &i
@@ -488,6 +494,51 @@ func TestCheckAndPush_ProbeRetriesWithError(t *testing.T) {
 	}
 }
 
+// panicProbe is a probe that panics on Check, for testing panic recovery
+type panicProbe struct {
+	mockProbe
+}
+
+func (p *panicProbe) Check(_ context.Context, _ string) (monitor.Result, error) {
+	panic("test panic from probe")
+}
+
+func TestRunServiceMonitor_RecoverFromPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	svc := config.Service{
+		Name:     "panic-service",
+		Interval: "100ms",
+	}
+	cfg := &config.Config{
+		Services: []config.Service{svc},
+	}
+	state := NewConfigState(cfg)
+	registry := tunnels.NewRegistry()
+	pusher := notifier.NewPusher()
+	wg := &sync.WaitGroup{}
+
+	p := &panicProbe{}
+
+	wg.Add(1)
+	go RunServiceMonitor(ctx, svc, p, state, registry, pusher, wg)
+
+	// Wait for the goroutine to complete (it should recover from the panic and return)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - panic was recovered, goroutine exited cleanly
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunServiceMonitor did not return after panic")
+	}
+}
+
 func TestCheckAndPush_PusherError(t *testing.T) {
 	ctx := context.Background()
 	svcName := "pusher-error-svc"
@@ -521,4 +572,61 @@ func TestCheckAndPush_PusherError(t *testing.T) {
 
 	// Should not panic when pusher returns an error
 	CheckAndPush(ctx, p, svcName, state, registry, pusher)
+}
+
+func TestCheckAndPush_CancelDuringRetryBackoff(t *testing.T) {
+	// Test the ctx.Done() path during retry backoff (monitor.go lines 119-120)
+	oldBackoff := RetryBackoff
+	RetryBackoff = 5 * time.Second // Long backoff so we can cancel during it
+	defer func() { RetryBackoff = oldBackoff }()
+
+	retries := 3
+	svcName := "cancel-during-retry"
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "100ms"},
+		Services: []config.Service{
+			{
+				Name:     svcName,
+				Type:     "http",
+				Interval: "100ms",
+				Retries:  &retries,
+				Targets:  []string{"http://localhost:1"},
+				MonitorEndpoint: config.MonitorEndpointConfig{
+					Success: config.EndpointConfig{URL: "http://localhost:1/push"},
+				},
+			},
+		},
+	}
+	state := NewConfigState(cfg)
+	registry := tunnels.NewRegistry()
+	pusher := notifier.NewPusher()
+
+	p := &mockProbe{
+		name: svcName,
+		checkResult: monitor.Result{
+			Success: false,
+			Message: "fail",
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		CheckAndPush(ctx, p, svcName, state, registry, pusher)
+		close(done)
+	}()
+
+	// Give it time to enter the retry backoff
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel context to trigger ctx.Done() during backoff
+	cancel()
+
+	select {
+	case <-done:
+		// Success - returned promptly after cancel
+	case <-time.After(2 * time.Second):
+		t.Fatal("CheckAndPush did not return after context cancellation during retry backoff")
+	}
 }

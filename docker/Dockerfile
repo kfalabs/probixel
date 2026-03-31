@@ -1,8 +1,8 @@
 # Build stage
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.1-alpine AS builder
 
 # Install build dependencies
-RUN apk add --no-cache git ca-certificates
+RUN apk add --no-cache git ca-certificates tzdata
 
 # Set working directory
 WORKDIR /build
@@ -32,30 +32,20 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -ldflags='-w -s -extldflags "-static"' \
     -o probixel ./cmd
 
-# Final stage - use alpine for minimal size.
-FROM alpine:3
+# Final stage - distroless for minimal attack surface.
+FROM gcr.io/distroless/static-debian13:nonroot
 
-# Install ca-certificates and timezone data
-RUN apk --no-cache add ca-certificates tzdata
+# Copy timezone data from builder
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
 # Keep all timestamps on UTC by default
 ENV TZ=UTC
-
-# Create non-root user for security
-RUN addgroup -g 1000 probixel && \
-    adduser -D -u 1000 -G probixel probixel
 
 # Set working directory
 WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/probixel .
-
-# Change ownership to non-root user
-RUN chown -R probixel:probixel /app
-
-# Switch to non-root user
-USER probixel
 
 # Run the application
 ENTRYPOINT ["/app/probixel"]

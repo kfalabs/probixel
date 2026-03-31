@@ -54,9 +54,11 @@ stop() {
     docker rm probixel
 }
 
-# Shell into running container (for debugging)
+# Shell into running container (not available with distroless)
 shell() {
-    docker exec -it probixel /bin/sh
+    echo "Error: Shell access is not available in distroless images."
+    echo "For debugging, use 'docker logs probixel' or rebuild with Alpine for a debug image."
+    exit 1
 }
 
 # Show container stats

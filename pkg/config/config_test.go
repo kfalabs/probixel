@@ -2289,3 +2289,386 @@ func TestValidate_MonitorEndpointTimeouts(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateEndpointURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid_http_url",
+			url:     "http://example.com/api/push",
+			wantErr: false,
+		},
+		{
+			name:    "valid_https_url",
+			url:     "https://monitor.example.com/heartbeat",
+			wantErr: false,
+		},
+		{
+			name:    "url_with_template_variables",
+			url:     "https://monitor.example.com/{%SERVICE_KEY%}/push",
+			wantErr: false,
+		},
+		{
+			name:    "empty_url",
+			url:     "",
+			wantErr: false,
+		},
+		{
+			name:    "invalid_scheme_ftp",
+			url:     "ftp://example.com/file",
+			wantErr: true,
+			errMsg:  "must use http or https scheme",
+		},
+		{
+			name:    "missing_scheme",
+			url:     "example.com/api",
+			wantErr: true,
+			errMsg:  "must use http or https scheme",
+		},
+		{
+			name:    "completely_invalid_url",
+			url:     "://broken",
+			wantErr: true,
+			errMsg:  "invalid URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateEndpointURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateEndpointURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateEndpointURL(%q) error = %v, want message containing %q", tt.url, err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+func TestParseDuration_AdditionalCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected time.Duration
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name:     "days_format_2d",
+			input:    "2d",
+			expected: 48 * time.Hour,
+			wantErr:  false,
+		},
+		{
+			name:    "large_day_value_overflow",
+			input:   "999999d",
+			wantErr: true,
+			errMsg:  "duration too large",
+		},
+		{
+			name:    "negative_days",
+			input:   "-5d",
+			wantErr: true,
+			errMsg:  "negative duration not allowed",
+		},
+		{
+			name:     "standard_go_duration_500ms",
+			input:    "500ms",
+			expected: 500 * time.Millisecond,
+			wantErr:  false,
+		},
+		{
+			name:     "empty_string",
+			input:    "",
+			expected: 0,
+			wantErr:  false,
+		},
+		{
+			name:     "zero_string",
+			input:    "0",
+			expected: 0,
+			wantErr:  false,
+		},
+		{
+			name:    "invalid_format_abc",
+			input:   "abc",
+			wantErr: true,
+		},
+		{
+			name:    "mixed_format_unsupported",
+			input:   "1d2h",
+			wantErr: true,
+		},
+		{
+			name:    "negative_standard_duration",
+			input:   "-5s",
+			wantErr: true,
+			errMsg:  "negative duration not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseDuration(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseDuration(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.expected {
+				t.Errorf("ParseDuration(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("ParseDuration(%q) error = %v, want message containing %q", tt.input, err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+func TestValidate_DuplicateServiceNames(t *testing.T) {
+	cfg := Config{
+		Global: GlobalConfig{DefaultInterval: "1m"},
+		Services: []Service{
+			{
+				Name:     "MyService",
+				Type:     "http",
+				URL:      "http://test",
+				Interval: "1m",
+				MonitorEndpoint: MonitorEndpointConfig{
+					Success: EndpointConfig{URL: "http://ok"},
+				},
+			},
+			{
+				Name:     "MyService",
+				Type:     "http",
+				URL:      "http://test2",
+				Interval: "1m",
+				MonitorEndpoint: MonitorEndpointConfig{
+					Success: EndpointConfig{URL: "http://ok"},
+				},
+			},
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for duplicate service names, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate service name") {
+		t.Errorf("expected 'duplicate service name' error, got: %v", err)
+	}
+}
+
+func TestValidate_DockerSocketPortOutOfRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		port    int
+		wantErr bool
+	}{
+		{"negative_port", -1, true},
+		{"port_above_65535", 70000, true},
+		{"valid_port", 2375, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Global: GlobalConfig{DefaultInterval: "1m"},
+				DockerSockets: map[string]DockerSocketConfig{
+					"test": {Host: "localhost", Port: tt.port},
+				},
+				Services: []Service{
+					{
+						Name:     "S1",
+						Type:     "http",
+						URL:      "http://test",
+						Interval: "1m",
+						MonitorEndpoint: MonitorEndpointConfig{
+							Success: EndpointConfig{URL: "http://ok"},
+						},
+					},
+				},
+			}
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error for port out of range, got nil")
+				}
+				if !strings.Contains(err.Error(), "port") && !strings.Contains(err.Error(), "out of range") {
+					t.Errorf("unexpected error: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidate_SSHTunnelPortOutOfRange(t *testing.T) {
+	cfg := Config{
+		Global: GlobalConfig{DefaultInterval: "1m"},
+		Tunnels: map[string]TunnelConfig{
+			"ssh-tun": {
+				Type:   "ssh",
+				Target: "bastion.example.com",
+				SSH: &SSHConfig{
+					User:     "user",
+					Password: "pass",
+					Port:     99999,
+				},
+			},
+		},
+		Services: []Service{},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for SSH tunnel port out of range, got nil")
+	}
+	if !strings.Contains(err.Error(), "port") || !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfig_UnknownFieldsWarning(t *testing.T) {
+	content := `
+global:
+  default_interval: "1m"
+  some_unknown_field: "hello"
+services:
+  - name: "S1"
+    type: "http"
+    url: "http://test"
+    interval: "1m"
+    monitor_endpoint:
+      success:
+        url: "http://ok"
+`
+	tmpfile, err := os.CreateTemp("", "config_unknown_fields_*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
+
+	if _, err := tmpfile.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	_ = tmpfile.Close()
+
+	// Should succeed via lenient fallback even with unknown fields
+	cfg, err := LoadConfig(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig should succeed with unknown fields (lenient fallback), got: %v", err)
+	}
+	if len(cfg.Services) != 1 {
+		t.Errorf("expected 1 service, got %d", len(cfg.Services))
+	}
+}
+
+func TestLoadConfig_PermissionsWarning(t *testing.T) {
+	content := `
+global:
+  default_interval: "1m"
+services:
+  - name: "S1"
+    type: "http"
+    url: "http://test"
+    interval: "1m"
+    monitor_endpoint:
+      success:
+        url: "http://ok"
+`
+	tmpfile, err := os.CreateTemp("", "config_perms_*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
+
+	if _, err := tmpfile.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	_ = tmpfile.Close()
+
+	// Set world-readable permissions to trigger warning path
+	if err := os.Chmod(tmpfile.Name(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig should succeed even with insecure permissions, got: %v", err)
+	}
+	if len(cfg.Services) != 1 {
+		t.Errorf("expected 1 service, got %d", len(cfg.Services))
+	}
+}
+
+func TestValidate_TunnelSSHInvalidPrivateKey2(t *testing.T) {
+	// Test the tunnel SSH private key validation error path (config.go lines 77-81)
+	cfg := &Config{
+		Global: GlobalConfig{DefaultInterval: "1m"},
+		Tunnels: map[string]TunnelConfig{
+			"ssh-bad-key": {
+				Type:   "ssh",
+				Target: "example.com",
+				SSH: &SSHConfig{
+					User:       "testuser",
+					PrivateKey: "invalid-key-data",
+				},
+			},
+		},
+		Services: []Service{
+			{
+				Name:     "test",
+				Type:     "host",
+				Interval: "1m",
+				MonitorEndpoint: MonitorEndpointConfig{
+					Success: EndpointConfig{URL: "http://localhost"},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid tunnel SSH private key")
+	}
+	if !strings.Contains(err.Error(), "ssh private_key is invalid") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_InvalidTargetMode(t *testing.T) {
+	// Test the invalid target_mode validation (config.go line 114-116)
+	cfg := &Config{
+		Global: GlobalConfig{DefaultInterval: "1m"},
+		Services: []Service{
+			{
+				Name:       "test",
+				Type:       "host",
+				Interval:   "1m",
+				TargetMode: "invalid-mode",
+				MonitorEndpoint: MonitorEndpointConfig{
+					Success: EndpointConfig{URL: "http://localhost"},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid target_mode")
+	}
+	if !strings.Contains(err.Error(), "invalid target_mode") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

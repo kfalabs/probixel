@@ -64,6 +64,11 @@ func (t *WireguardTunnel) Initialize() error {
 		return nil
 	}
 
+	return t.initializeLocked()
+}
+
+// initializeLocked performs tunnel setup. Caller MUST hold t.mu.
+func (t *WireguardTunnel) initializeLocked() error {
 	var tunDev tun.Device
 	var netst *netstack.Net
 
@@ -106,16 +111,17 @@ func (t *WireguardTunnel) Initialize() error {
 		return fmt.Errorf("invalid public key: %w", err)
 	}
 
-	uapiConf := "replace_peers=true\n"
-	uapiConf += fmt.Sprintf("private_key=%s\n", hex.EncodeToString(privKey[:]))
-	uapiConf += fmt.Sprintf("public_key=%s\n", hex.EncodeToString(pubKey[:]))
+	var b strings.Builder
+	b.WriteString("replace_peers=true\n")
+	fmt.Fprintf(&b, "private_key=%s\n", hex.EncodeToString(privKey[:]))
+	fmt.Fprintf(&b, "public_key=%s\n", hex.EncodeToString(pubKey[:]))
 	if t.cfg.PresharedKey != "" {
 		psk, err := wgtypes.ParseKey(t.cfg.PresharedKey)
 		if err != nil {
 			dev.Close()
 			return fmt.Errorf("invalid preshared key: %w", err)
 		}
-		uapiConf += fmt.Sprintf("preshared_key=%s\n", hex.EncodeToString(psk[:]))
+		fmt.Fprintf(&b, "preshared_key=%s\n", hex.EncodeToString(psk[:]))
 	}
 
 	resolvedAddr, err := net.ResolveUDPAddr("udp", t.cfg.Endpoint)
@@ -123,7 +129,7 @@ func (t *WireguardTunnel) Initialize() error {
 		dev.Close()
 		return fmt.Errorf("failed to resolve wireguard endpoint %q: %w", t.cfg.Endpoint, err)
 	}
-	uapiConf += fmt.Sprintf("endpoint=%s\n", resolvedAddr.String())
+	fmt.Fprintf(&b, "endpoint=%s\n", resolvedAddr.String())
 
 	allowedIPs := t.cfg.AllowedIPs
 	if allowedIPs == "" {
@@ -132,7 +138,7 @@ func (t *WireguardTunnel) Initialize() error {
 	for _, cidr := range strings.Split(allowedIPs, ",") {
 		cidr = strings.TrimSpace(cidr)
 		if cidr != "" {
-			uapiConf += fmt.Sprintf("allowed_ip=%s\n", cidr)
+			fmt.Fprintf(&b, "allowed_ip=%s\n", cidr)
 		}
 	}
 
@@ -140,9 +146,9 @@ func (t *WireguardTunnel) Initialize() error {
 	if keepalive == 0 {
 		keepalive = 25
 	}
-	uapiConf += fmt.Sprintf("persistent_keepalive_interval=%d\n", keepalive)
+	fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", keepalive)
 
-	if err := dev.IpcSet(uapiConf); err != nil {
+	if err := dev.IpcSet(b.String()); err != nil {
 		dev.Close()
 		return fmt.Errorf("failed to configure wireguard device: %w", err)
 	}
@@ -170,24 +176,26 @@ func (t *WireguardTunnel) LastInitTime() time.Time {
 	return t.initTime
 }
 
+// ReportFailure checks tunnel health and restarts if both handshake and success
+// indicators are stale. IpcGet is called outside the lock to avoid deadlocks.
 func (t *WireguardTunnel) ReportFailure() {
+	// Phase 1: Capture state under lock
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if t.dev == nil {
+		t.mu.Unlock()
 		return
 	}
-
-	// Check the actual WireGuard handshake timestamp
-	lastHandshake := t.getLastHandshakeTime()
-
-	// Use lastSuccessTime if set, otherwise fallback to initTime
+	dev := t.dev
 	lastCheckTime := t.lastSuccessTime
-	threshold := t.successWindow // Use successWindow as the threshold for app-level success
+	threshold := t.successWindow
 
 	if lastCheckTime.IsZero() {
 		lastCheckTime = t.initTime
 	}
+	t.mu.Unlock()
+
+	// Phase 2: Blocking IPC call outside the lock
+	lastHandshake := getHandshakeFromDevice(dev)
 
 	// Determine if tunnel is healthy based on EITHER:
 	// 1. Recent handshake (< 5 minutes), OR
@@ -210,6 +218,15 @@ func (t *WireguardTunnel) ReportFailure() {
 		return
 	}
 
+	// Phase 3: Re-acquire lock for mutation
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Re-check dev hasn't changed while we were unlocked
+	if t.dev == nil || t.dev != dev {
+		return
+	}
+
 	// Neither handshake nor success are recent, restart the tunnel
 	log.Printf("[Tunnel:%s] Restarting tunnel: no recent handshake or success (handshake: %v ago, success: %v ago, thresholds: 5m0s / %v)",
 		t.name,
@@ -227,22 +244,29 @@ func (t *WireguardTunnel) ReportFailure() {
 		t.dev = nil
 	}
 	t.netst = nil
-	t.initTime = time.Time{} // Reset initTime on stop
+	t.initTime = time.Time{}
+
+	// Attempt immediate re-initialization
+	log.Printf("[Tunnel:%s] Attempting re-initialization...", t.name)
+	if err := t.initializeLocked(); err != nil {
+		log.Printf("[Tunnel:%s] Re-init failed: %v (will retry on next dial)", t.name, err)
+	} else {
+		log.Printf("[Tunnel:%s] Re-initialized successfully", t.name)
+	}
 }
 
-// getLastHandshakeTime retrieves the most recent handshake timestamp from the WireGuard device
-// This method must be called with the mutex already locked
-func (t *WireguardTunnel) getLastHandshakeTime() time.Time {
-	if t.dev == nil {
+// getHandshakeFromDevice retrieves the most recent handshake timestamp from a WireGuard device.
+// This is a standalone function that doesn't require any lock.
+func getHandshakeFromDevice(dev WGDevice) time.Time {
+	if dev == nil {
 		return time.Time{}
 	}
 
-	uapi, err := t.dev.IpcGet()
+	uapi, err := dev.IpcGet()
 	if err != nil {
 		return time.Time{}
 	}
 
-	// Parse the handshake time from UAPI output
 	lines := strings.Split(uapi, "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "last_handshake_time_sec=") {
@@ -257,6 +281,12 @@ func (t *WireguardTunnel) getLastHandshakeTime() time.Time {
 	return time.Time{}
 }
 
+// getLastHandshakeTime retrieves the most recent handshake timestamp from the WireGuard device.
+// This method must be called with the mutex already locked.
+func (t *WireguardTunnel) getLastHandshakeTime() time.Time {
+	return getHandshakeFromDevice(t.dev)
+}
+
 func (t *WireguardTunnel) ReportSuccess() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -269,20 +299,45 @@ func (t *WireguardTunnel) SetSuccessWindow(window time.Duration) {
 	t.successWindow = window
 }
 
+// DialContext dials through the WireGuard tunnel. If the tunnel has been destroyed
+// (e.g. by ReportFailure), it attempts to re-initialize automatically.
 func (t *WireguardTunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	if t.netst == nil {
-		return nil, fmt.Errorf("wireguard tunnel %q not initialized", t.name)
+	t.mu.RLock()
+	netst := t.netst
+	t.mu.RUnlock()
+
+	if netst == nil {
+		// Attempt re-initialization
+		if err := t.Initialize(); err != nil {
+			return nil, fmt.Errorf("wireguard tunnel %q re-init failed: %w", t.name, err)
+		}
+		t.mu.RLock()
+		netst = t.netst
+		t.mu.RUnlock()
+		if netst == nil {
+			return nil, fmt.Errorf("wireguard tunnel %q not initialized", t.name)
+		}
 	}
-	return t.netst.DialContext(ctx, network, address)
+	return netst.DialContext(ctx, network, address)
 }
 
-func (t *WireguardTunnel) Device() WGDevice                { return t.dev }
-func (t *WireguardTunnel) Netstack() *netstack.Net         { return t.netst }
+func (t *WireguardTunnel) Device() WGDevice {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.dev
+}
+
+func (t *WireguardTunnel) Netstack() *netstack.Net {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.netst
+}
+
 func (t *WireguardTunnel) Config() *config.WireguardConfig { return t.cfg }
 
 func (t *WireguardTunnel) IsStabilized() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 
 	// If never initialized, explicitly stopped, or backends not ready, not stabilized
 	if t.initTime.IsZero() || t.dev == nil || t.netst == nil {

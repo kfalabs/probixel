@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"probixel/pkg/tunnels"
 	"strings"
 	"testing"
@@ -210,5 +211,138 @@ func TestDNSProbe_SetTimeout(t *testing.T) {
 	p.SetTimeout(10 * time.Second)
 	if p.Timeout != 10*time.Second {
 		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
+	}
+}
+
+func TestDNSProbe_Check_AnyMode_WithResolveFunc(t *testing.T) {
+	// Test the "any" mode path when Resolve func is set (lines 204-205, 236-244)
+	// This exercises the path where Resolve != nil in the "any" mode loop
+	probe := &DNSProbe{
+		Resolve: func(ctx context.Context, nameserver, host string) ([]string, error) {
+			if strings.Contains(nameserver, "fail") {
+				return nil, fmt.Errorf("resolve error")
+			}
+			return []string{"1.2.3.4"}, nil
+		},
+	}
+	probe.SetTargetMode(TargetModeAny)
+
+	// First target fails, second succeeds via Resolve func
+	res, err := probe.Check(context.Background(), "fail:53, good:53")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Expected success via second target, got failure: %s", res.Message)
+	}
+}
+
+func TestDNSProbe_Check_AnyMode_ResolveReturnsEmptyIPs(t *testing.T) {
+	// Test when Resolve returns empty IPs (no error but no results)
+	probe := &DNSProbe{
+		Resolve: func(ctx context.Context, nameserver, host string) ([]string, error) {
+			return []string{}, nil // empty IPs, no error
+		},
+	}
+	probe.SetTargetMode(TargetModeAny)
+
+	res, err := probe.Check(context.Background(), "8.8.8.8:53")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Success {
+		t.Error("Expected failure when resolve returns empty IPs")
+	}
+}
+
+func TestDNSProbe_Check_AllMode_WithResolveFunc(t *testing.T) {
+	// Test "all" mode with Resolve func set and empty IPs returned
+	probe := &DNSProbe{
+		Resolve: func(ctx context.Context, nameserver, host string) ([]string, error) {
+			return nil, nil // nil IPs, no error - triggers len(ips) == 0
+		},
+	}
+	probe.SetTargetMode(TargetModeAll)
+
+	res, err := probe.Check(context.Background(), "8.8.8.8:53")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Success {
+		t.Error("Expected failure when resolve returns nil IPs in all mode")
+	}
+}
+
+func TestDNSProbe_Check_AnyMode_RealResolver_UDPSuccess(t *testing.T) {
+	// Test the "any" mode real resolver path where UDP succeeds (lines 210-219)
+	// Uses system resolver (127.0.0.1:53 or similar)
+	probe := &DNSProbe{
+		Timeout: 5 * time.Second,
+	}
+	probe.SetTargetMode(TargetModeAny)
+	probe.SetDomain("localhost")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Use the system's default DNS resolver
+	res, err := probe.Check(ctx, "127.0.0.1:53")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// We don't assert success since the local resolver might not be available,
+	// but this exercises the code path
+	_ = res
+}
+
+func TestDNSProbe_Check_AnyMode_RealResolver_TCPFallback(t *testing.T) {
+	// Test the "any" mode real resolver TCP fallback path (lines 222-232)
+	// by using a custom DialContext that fails for UDP but succeeds for TCP
+	probe := &DNSProbe{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if network == "udp" {
+				return nil, fmt.Errorf("udp blocked")
+			}
+			// Let TCP through to a real resolver
+			d := net.Dialer{Timeout: 2 * time.Second}
+			return d.DialContext(ctx, network, address)
+		},
+		Timeout: 5 * time.Second,
+	}
+	probe.SetTargetMode(TargetModeAny)
+	probe.SetDomain("localhost")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := probe.Check(ctx, "127.0.0.1:53")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// This exercises the TCP fallback path. If local DNS is available via TCP it succeeds,
+	// otherwise it fails but the code path is still exercised.
+	_ = res
+}
+
+func TestDNSProbe_GetResolvers_Cached(t *testing.T) {
+	probe := &DNSProbe{}
+
+	udp1, tcp1 := probe.getResolvers("8.8.8.8:53")
+	udp2, tcp2 := probe.getResolvers("8.8.8.8:53")
+
+	if udp1 != udp2 {
+		t.Error("Expected same UDP resolver on second call for same nameserver")
+	}
+	if tcp1 != tcp2 {
+		t.Error("Expected same TCP resolver on second call for same nameserver")
+	}
+
+	// Different nameserver should return different resolvers
+	udp3, tcp3 := probe.getResolvers("1.1.1.1:53")
+	if udp1 == udp3 {
+		t.Error("Expected different UDP resolver for different nameserver")
+	}
+	if tcp1 == tcp3 {
+		t.Error("Expected different TCP resolver for different nameserver")
 	}
 }

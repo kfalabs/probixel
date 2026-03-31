@@ -5,12 +5,18 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"probixel/pkg/tunnels"
 )
 
 const DEFAULT_DOMAIN = "google.com"
+
+type resolverPair struct {
+	udp *net.Resolver
+	tcp *net.Resolver
+}
 
 type DNSProbe struct {
 	Resolve     func(ctx context.Context, nameserver, host string) ([]string, error)
@@ -19,6 +25,48 @@ type DNSProbe struct {
 	targetMode  string
 	domain      string
 	tunnel      tunnels.Tunnel
+	resolverMu  sync.Mutex
+	resolvers   map[string]*resolverPair
+}
+
+func (p *DNSProbe) getResolvers(nameserver string) (*net.Resolver, *net.Resolver) {
+	p.resolverMu.Lock()
+	defer p.resolverMu.Unlock()
+
+	if p.resolvers == nil {
+		p.resolvers = make(map[string]*resolverPair)
+	}
+
+	if pair, ok := p.resolvers[nameserver]; ok {
+		return pair.udp, pair.tcp
+	}
+
+	dialer := p.DialContext
+	if dialer == nil {
+		timeout := p.Timeout
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		d := net.Dialer{Timeout: timeout}
+		dialer = d.DialContext
+	}
+
+	pair := &resolverPair{
+		udp: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return dialer(ctx, "udp", nameserver)
+			},
+		},
+		tcp: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return dialer(ctx, "tcp", nameserver)
+			},
+		},
+	}
+	p.resolvers[nameserver] = pair
+	return pair.udp, pair.tcp
 }
 
 func (p *DNSProbe) SetTunnel(t tunnels.Tunnel) {
@@ -67,54 +115,8 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 				continue
 			}
 
-			// Handle host:port
-			host, port, err := net.SplitHostPort(t)
+			duration, err := p.resolveTarget(ctx, t)
 			if err != nil {
-				host = t
-				port = "53"
-			}
-			nameserver := net.JoinHostPort(host, port)
-			start := time.Now()
-
-			domainToResolve := p.domain
-			if domainToResolve == "" {
-				domainToResolve = DEFAULT_DOMAIN
-			}
-
-			var ips []string
-			if p.Resolve != nil {
-				ips, err = p.Resolve(ctx, nameserver, domainToResolve)
-			} else {
-				dialer := p.DialContext
-				if dialer == nil {
-					timeout := p.Timeout
-					if timeout == 0 {
-						timeout = 5 * time.Second
-					}
-					d := net.Dialer{Timeout: timeout}
-					dialer = d.DialContext
-				}
-
-				r := &net.Resolver{
-					PreferGo: true,
-					Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-						return dialer(ctx, "udp", nameserver)
-					},
-				}
-				ips, err = r.LookupHost(ctx, domainToResolve)
-				if err != nil {
-					// Retry with TCP
-					rTCP := &net.Resolver{
-						PreferGo: true,
-						Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-							return dialer(ctx, "tcp", nameserver)
-						},
-					}
-					ips, err = rTCP.LookupHost(ctx, domainToResolve)
-				}
-			}
-
-			if err != nil || len(ips) == 0 {
 				return Result{
 					Success:   false,
 					Duration:  0,
@@ -123,7 +125,7 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 				}, nil
 			}
 
-			totalDuration += time.Since(start)
+			totalDuration += duration
 			successCount++
 		}
 
@@ -158,28 +160,45 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 			domainToResolve = DEFAULT_DOMAIN
 		}
 
+		// Enforce timeout on DNS lookups
+		lookupTimeout := p.Timeout
+		if lookupTimeout == 0 {
+			lookupTimeout = 5 * time.Second
+		}
+		lookupCtx, lookupCancel := context.WithTimeout(ctx, lookupTimeout)
+
 		var ips []string
 		if p.Resolve != nil {
-			ips, err = p.Resolve(ctx, nameserver, domainToResolve)
+			ips, err = p.Resolve(lookupCtx, nameserver, domainToResolve)
 		} else {
-			dialer := p.DialContext
-			if dialer == nil {
-				timeout := p.Timeout
-				if timeout == 0 {
-					timeout = 5 * time.Second
-				}
-				d := net.Dialer{Timeout: timeout}
-				dialer = d.DialContext
+			udpResolver, tcpResolver := p.getResolvers(nameserver)
+			ips, err = udpResolver.LookupHost(lookupCtx, domainToResolve)
+
+			if err == nil && len(ips) > 0 {
+				lookupCancel()
+				return Result{
+					Success:   true,
+					Duration:  time.Since(start),
+					Message:   "OK",
+					Target:    nameserver,
+					Timestamp: startTotal,
+				}, nil
 			}
 
-			r := &net.Resolver{
-				PreferGo: true,
-				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-					return dialer(ctx, "udp", nameserver)
-				},
+			// Retry DNS resolution with TCP using the same timeout context
+			ips, err = tcpResolver.LookupHost(lookupCtx, domainToResolve)
+			if err == nil && len(ips) > 0 {
+				lookupCancel()
+				return Result{
+					Success:   true,
+					Duration:  time.Since(start),
+					Message:   "OK (TCP)",
+					Target:    nameserver,
+					Timestamp: startTotal,
+				}, nil
 			}
-			ips, err = r.LookupHost(ctx, domainToResolve)
 		}
+		lookupCancel()
 
 		if err == nil && len(ips) > 0 {
 			return Result{
@@ -189,36 +208,6 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 				Target:    nameserver,
 				Timestamp: startTotal,
 			}, nil
-		}
-
-		// Retry DNS resolution with TCP if UDP failed
-		if p.Resolve == nil {
-			dialer := p.DialContext
-			if dialer == nil {
-				timeout := p.Timeout
-				if timeout == 0 {
-					timeout = 5 * time.Second
-				}
-				d := net.Dialer{Timeout: timeout}
-				dialer = d.DialContext
-			}
-
-			rTCP := &net.Resolver{
-				PreferGo: true,
-				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-					return dialer(ctx, "tcp", nameserver)
-				},
-			}
-			ips, err = rTCP.LookupHost(ctx, domainToResolve)
-			if err == nil && len(ips) > 0 {
-				return Result{
-					Success:   true,
-					Duration:  time.Since(start),
-					Message:   "OK (TCP)",
-					Target:    nameserver,
-					Timestamp: startTotal,
-				}, nil
-			}
 		}
 
 		lastErr = err
@@ -231,6 +220,48 @@ func (p *DNSProbe) Check(ctx context.Context, target string) (Result, error) {
 		Timestamp: startTotal,
 	}, nil
 }
+func (p *DNSProbe) resolveTarget(ctx context.Context, target string) (time.Duration, error) {
+	// Handle host:port
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		host = target
+		port = "53"
+	}
+	nameserver := net.JoinHostPort(host, port)
+	start := time.Now()
+
+	domainToResolve := p.domain
+	if domainToResolve == "" {
+		domainToResolve = DEFAULT_DOMAIN
+	}
+
+	// Enforce timeout on DNS lookups
+	lookupTimeout := p.Timeout
+	if lookupTimeout == 0 {
+		lookupTimeout = 5 * time.Second
+	}
+	lookupCtx, lookupCancel := context.WithTimeout(ctx, lookupTimeout)
+	defer lookupCancel()
+
+	var ips []string
+	if p.Resolve != nil {
+		ips, err = p.Resolve(lookupCtx, nameserver, domainToResolve)
+	} else {
+		udpResolver, tcpResolver := p.getResolvers(nameserver)
+		ips, err = udpResolver.LookupHost(lookupCtx, domainToResolve)
+		if err != nil {
+			// Retry with TCP
+			ips, err = tcpResolver.LookupHost(lookupCtx, domainToResolve)
+		}
+	}
+
+	if err != nil || len(ips) == 0 {
+		return 0, fmt.Errorf("%v", err)
+	}
+
+	return time.Since(start), nil
+}
+
 func (p *DNSProbe) SetTimeout(timeout time.Duration) {
 	p.Timeout = timeout
 }

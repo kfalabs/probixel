@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"log"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -13,8 +14,16 @@ import (
 	"probixel/pkg/tunnels"
 )
 
+// RetryBackoff is the base delay between probe retries. Exported for test override.
+var RetryBackoff = 5 * time.Second
+
 func RunServiceMonitor(ctx context.Context, svc config.Service, probe monitor.Probe, state *ConfigState, registry *tunnels.Registry, pusher *notifier.Pusher, wg *sync.WaitGroup) {
 	defer wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[%s] [PANIC] RunServiceMonitor: %v\n%s", svc.Name, r, debug.Stack())
+		}
+	}()
 
 	intervalStr := svc.Interval
 	if intervalStr == "" {
@@ -102,7 +111,14 @@ func CheckAndPush(ctx context.Context, probe monitor.Probe, serviceName string, 
 
 	for attempt := 0; attempt <= retries; attempt++ {
 		if attempt > 0 {
-			log.Printf("[%s] Retrying probe check (attempt %d/%d)...", svc.Name, attempt, retries)
+			// Backoff before retry to span WireGuard handshake windows
+			backoff := time.Duration(attempt) * RetryBackoff
+			log.Printf("[%s] Retrying probe check (attempt %d/%d) after %v...", svc.Name, attempt, retries, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
 		}
 
 		result, lastErr = probe.Check(ctx, target)
@@ -112,7 +128,6 @@ func CheckAndPush(ctx context.Context, probe monitor.Probe, serviceName string, 
 		}
 		if lastErr != nil {
 			log.Printf("[%s] Probe internal error: %v", svc.Name, lastErr)
-			// Continue to retry if internal error? Usually yes if it's a transient failure.
 		}
 		if !result.Success && !result.Pending && attempt < retries {
 			// Failed but have retries left

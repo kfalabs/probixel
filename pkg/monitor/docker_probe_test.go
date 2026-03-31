@@ -79,7 +79,7 @@ func TestDockerProbe_Check_UnixSocket(t *testing.T) {
 	_ = os.Remove(socketFile)
 	defer os.Remove(socketFile)
 
-	l, err := net.Listen("unix", socketFile)
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketFile)
 	if err != nil {
 		t.Fatalf("failed to listen on unix socket: %v", err)
 	}
@@ -343,13 +343,13 @@ func TestDockerProbe_Check_Errors(t *testing.T) {
 		probe := &DockerProbe{}
 
 		// Empty protocol should default to http
-		client, url, err := probe.getClient(config.DockerSocketConfig{Host: "localhost", Port: 80})
+		client, url, err := probe.buildClient(config.DockerSocketConfig{Host: "localhost", Port: 80})
 		if err != nil || url != "http://localhost:80" || client == nil {
 			t.Errorf("failed empty protocol: %v, %s", err, url)
 		}
 
 		// HTTPS protocol
-		client, url, err = probe.getClient(config.DockerSocketConfig{Host: "localhost", Port: 443, Protocol: "https"})
+		client, url, err = probe.buildClient(config.DockerSocketConfig{Host: "localhost", Port: 443, Protocol: "https"})
 		if err != nil || url != "https://localhost:443" || client == nil {
 			t.Errorf("failed https protocol: %v, %s", err, url)
 		}
@@ -363,7 +363,7 @@ func TestDockerProbe_Check_Errors(t *testing.T) {
 			SocketName: "test",
 		}
 		res, _ := probe.Check(context.Background(), "any")
-		if res.Success || !strings.Contains(res.Message, "failed to create request") {
+		if res.Success || (!strings.Contains(res.Message, "failed to create request") && !strings.Contains(res.Message, "failed to build URL")) {
 			t.Errorf("expected request creation failure, got: %s", res.Message)
 		}
 	})
@@ -553,4 +553,18 @@ func TestDockerProbe_SetTimeout(t *testing.T) {
 	if p.Timeout != 10*time.Second {
 		t.Errorf("Expected timeout 10s, got %v", p.Timeout)
 	}
+}
+
+func TestDockerProbe_Close_NilClient(t *testing.T) {
+	// Close on a fresh probe with nil cachedClient should not panic
+	probe := &DockerProbe{}
+	probe.Close() // should be a no-op, no panic
+}
+
+func TestDockerProbe_Close_WithClient(t *testing.T) {
+	// Manually set a cached client and verify Close works
+	probe := &DockerProbe{
+		cachedClient: &http.Client{},
+	}
+	probe.Close() // should not panic
 }

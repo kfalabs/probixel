@@ -3,23 +3,25 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os"
-	"os/exec"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"probixel/pkg/tunnels"
 
+	probing "github.com/prometheus-community/pro-bing"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 )
 
-// execCommand is a variable to allow mocking in tests
-var execCommand = exec.CommandContext
+// pingFunc is the default non-tunnel ping implementation, swappable for tests
+var pingFunc = defaultPingFunc
+
+var pingTimeRegex = regexp.MustCompile(`time=([0-9.]+)`)
 
 type PingProbe struct {
 	targetMode  string
@@ -131,44 +133,86 @@ func (p *PingProbe) Check(ctx context.Context, target string) (Result, error) {
 }
 
 func (p *PingProbe) pingTarget(ctx context.Context, target string) (time.Duration, string, error) {
-	if p.DialContext != nil {
-		duration, msg, err := p.pingBuiltin(ctx, target)
-		if err != nil && strings.Contains(err.Error(), "unsupported protocol") {
-			// SSH tunnels don't support ICMP - try remote ping execution
-			if p.tunnel != nil {
-				if sshTunnel, ok := p.tunnel.(*tunnels.SSHTunnel); ok {
-					return p.pingRemoteSSH(ctx, sshTunnel, target)
-				}
-			}
-			// Fallback to local executable ping
-			return p.pingExecutable(ctx, target)
-		}
+	if p.DialContext == nil {
+		return p.pingProBing(ctx, target)
+	}
+
+	duration, msg, err := p.pingBuiltin(ctx, target)
+	if err == nil || !strings.Contains(err.Error(), "unsupported protocol") {
 		return duration, msg, err
 	}
-	return p.pingExecutable(ctx, target)
+
+	// SSH tunnels don't support ICMP - try remote ping execution
+	if p.tunnel != nil {
+		if sshTunnel, ok := p.tunnel.(*tunnels.SSHTunnel); ok {
+			return p.pingRemoteSSH(ctx, sshTunnel, target)
+		}
+	}
+
+	// Fallback to local executable ping
+	return p.pingProBing(ctx, target)
 }
 
-func (p *PingProbe) pingExecutable(ctx context.Context, target string) (time.Duration, string, error) {
+func runPing(ctx context.Context, target string, timeout time.Duration, privileged bool) (time.Duration, error) {
+	pinger, err := probing.NewPinger(target)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create pinger: %w", err)
+	}
+	pinger.Count = 1
+	pinger.Timeout = timeout
+	pinger.SetPrivileged(privileged)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pinger.Run()
+	}()
+
+	select {
+	case <-ctx.Done():
+		pinger.Stop()
+		return 0, ctx.Err()
+	case err := <-done:
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	stats := pinger.Statistics()
+	if stats.PacketLoss == 100 {
+		return 0, fmt.Errorf("100%% packet loss")
+	}
+	return stats.MaxRtt, nil
+}
+
+func defaultPingFunc(ctx context.Context, target string, timeout time.Duration) (time.Duration, error) {
+	// Try privileged (raw ICMP) first — works when running as root or with CAP_NET_RAW
+	duration, err := runPing(ctx, target, timeout, true)
+	if err == nil {
+		return duration, nil
+	}
+
+	// Fall back to unprivileged (UDP ICMP) — works when net.ipv4.ping_group_range allows our GID
+	duration, unprivErr := runPing(ctx, target, timeout, false)
+	if unprivErr == nil {
+		return duration, nil
+	}
+
+	// Both failed — return the unprivileged error with guidance
+	log.Printf("WARNING: Ping probe failed. If using Docker, add --sysctl net.ipv4.ping_group_range=\"0 2147483647\" to your run command")
+	return 0, unprivErr
+}
+
+func (p *PingProbe) pingProBing(ctx context.Context, target string) (time.Duration, string, error) {
 	timeout := p.Timeout
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
-	ctxCmd, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
-	name, args := getPingArgs(runtime.GOOS, target, timeout)
-	cmd := execCommand(ctxCmd, name, args...)
-
-	output, err := cmd.CombinedOutput()
+	duration, err := pingFunc(ctx, target, timeout)
 	if err != nil {
 		return 0, "", err
 	}
-
-	rtt, parseErr := parsePingTime(string(output))
-	if parseErr != nil {
-		return 1 * time.Millisecond, "OK (time parse fail)", nil
-	}
-	return rtt, "OK", nil
+	return duration, "OK", nil
 }
 
 func (p *PingProbe) pingRemoteSSH(ctx context.Context, sshTunnel *tunnels.SSHTunnel, target string) (time.Duration, string, error) {
@@ -213,7 +257,6 @@ func (p *PingProbe) pingRemoteSSH(ctx context.Context, sshTunnel *tunnels.SSHTun
 
 func (p *PingProbe) pingBuiltin(ctx context.Context, target string) (time.Duration, string, error) {
 
-	start := time.Now()
 	socket, err := p.DialContext(ctx, "ping4", target)
 	if err != nil {
 		return 0, "", fmt.Errorf("dial ping4 failed: %w", err)
@@ -239,6 +282,8 @@ func (p *PingProbe) pingBuiltin(ctx context.Context, target string) (time.Durati
 			Data: []byte("PROBIXEL"),
 		},
 	}
+
+	start := time.Now() // Measure RTT from after dial, not including tunnel setup
 
 	icmpBytes, err := msg.Marshal(nil)
 	if err != nil {
@@ -284,8 +329,7 @@ func getPingArgs(goos, target string, timeout time.Duration) (string, []string) 
 
 func parsePingTime(output string) (time.Duration, error) {
 	// standard ping output: time=12.3 ms
-	re := regexp.MustCompile(`time=([0-9.]+)`)
-	matches := re.FindStringSubmatch(output)
+	matches := pingTimeRegex.FindStringSubmatch(output)
 	if len(matches) > 1 {
 		msStr := matches[1]
 		ms, err := strconv.ParseFloat(msStr, 64)

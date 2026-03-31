@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -17,18 +18,35 @@ import (
 )
 
 type Pusher struct {
-	Client    *http.Client
-	mu        sync.Mutex
-	lastPush  time.Time
-	rateLimit time.Duration
+	Client         *http.Client
+	insecureClient *http.Client
+	mu             sync.Mutex
+	lastPush       map[string]time.Time // per-service rate limit tracking
+	rateLimit      time.Duration
 }
 
 func NewPusher() *Pusher {
 	return &Pusher{
-		Client: &http.Client{
+		Client: &http.Client{Timeout: 10 * time.Second},
+		insecureClient: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			},
 			Timeout: 10 * time.Second,
 		},
+		lastPush:  make(map[string]time.Time),
 		rateLimit: 100 * time.Millisecond,
+	}
+}
+
+// Cleanup removes entries from the lastPush map for services that are no longer active.
+func (p *Pusher) Cleanup(activeServices map[string]bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for name := range p.lastPush {
+		if !activeServices[name] {
+			delete(p.lastPush, name)
+		}
 	}
 }
 
@@ -82,16 +100,28 @@ func (p *Pusher) Push(ctx context.Context, serviceName string, result monitor.Re
 	if result.SkipNotification || result.Pending {
 		return nil
 	}
-	// Enforce rate limit
+	// Enforce per-service rate limit (release lock before sleeping)
 	p.mu.Lock()
+	var sleepDuration time.Duration
 	if p.rateLimit > 0 {
-		elapsed := time.Since(p.lastPush)
-		if elapsed < p.rateLimit {
-			time.Sleep(p.rateLimit - elapsed)
+		if last, ok := p.lastPush[serviceName]; ok {
+			elapsed := time.Since(last)
+			if elapsed < p.rateLimit {
+				sleepDuration = p.rateLimit - elapsed
+			}
 		}
 	}
-	p.lastPush = time.Now()
+	// Record push time immediately (with projected future time) to block concurrent callers
+	p.lastPush[serviceName] = time.Now().Add(sleepDuration)
 	p.mu.Unlock()
+
+	if sleepDuration > 0 {
+		select {
+		case <-time.After(sleepDuration):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	var endpoint *config.EndpointConfig
 
@@ -118,7 +148,12 @@ func (p *Pusher) Push(ctx context.Context, serviceName string, result monitor.Re
 		method = "GET"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, finalURL, nil) // Empty body as per bash script (uses query params)
+	parsedURL, err := url.Parse(finalURL)
+	if err != nil {
+		return fmt.Errorf("invalid notification URL: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), nil)
 	if err != nil {
 		return err
 	}
@@ -163,7 +198,14 @@ func (p *Pusher) Push(ctx context.Context, serviceName string, result monitor.Re
 		retries = *endpointCfg.Retries
 	}
 
-	log.Printf("[%s] Sending notifications to -> %s", serviceName, finalURL)
+	maskedURL := finalURL
+	if u, err := url.Parse(finalURL); err == nil && u.RawQuery != "" {
+		u.RawQuery = "***"
+		maskedURL = u.String()
+	}
+	sanitizedName := strings.NewReplacer("\n", "", "\r", "").Replace(serviceName)
+	sanitizedURL := strings.NewReplacer("\n", "", "\r", "").Replace(maskedURL)
+	log.Printf("[%s] Sending notifications to -> %s", sanitizedName, sanitizedURL) //nolint:gosec // G706: values sanitized by stripping newlines/CR
 
 	var lastErr error
 	for attempt := 0; attempt <= retries; attempt++ {
@@ -173,6 +215,16 @@ func (p *Pusher) Push(ctx context.Context, serviceName string, result monitor.Re
 
 		if attempt > 0 {
 			log.Printf("[%s] Retrying alert push (attempt %d/%d)...", serviceName, attempt, retries)
+		}
+
+		if attempt > 0 {
+			shift := min(attempt-1, 62)                                         //nolint:gosec // G115: shift is bounded [0,62] by min()
+			backoff := time.Duration(1<<uint(shift)) * 500 * time.Millisecond //nolint:gosec // G115: shift is bounded [0,62] by min()
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
 		startPush := time.Now()
@@ -201,26 +253,22 @@ func (p *Pusher) Push(ctx context.Context, serviceName string, result monitor.Re
 func (p *Pusher) doPush(req *http.Request, endpoint *config.EndpointConfig, timeout time.Duration) error {
 	client := p.Client
 	if endpoint.InsecureSkipVerify {
-		// Create a temporary client with insecure TLS skip
-		tr := &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: User-requested skip
-		}
-		client = &http.Client{
-			Transport: tr,
-			Timeout:   timeout,
-		}
-	} else if timeout != p.Client.Timeout {
-		// Copy client and set specific timeout
-		newClient := *p.Client
+		client = p.insecureClient
+	}
+	if timeout != client.Timeout {
+		newClient := *client
 		newClient.Timeout = timeout
 		client = &newClient
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: URL is validated via url.Parse, comes from config
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("bad status code from alert endpoint: %d", resp.StatusCode)

@@ -3,6 +3,7 @@ package health
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"syscall"
 )
@@ -11,8 +12,20 @@ var findProcess = os.FindProcess
 
 // WritePIDFile writes the current process ID to the specified path.
 func WritePIDFile(path string) error {
+	path = filepath.Clean(path)
 	pid := os.Getpid()
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0600)
+	// Remove existing file to prevent symlink attacks
+	_ = os.Remove(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(f, "%d", pid)
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 // CheckHealth checks if a process with the PID recorded in pidFile is running.
