@@ -11,7 +11,20 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	probing "github.com/prometheus-community/pro-bing"
 )
+
+// canPing checks whether raw ICMP sockets are available (they aren't in most CI environments).
+func canPing() bool {
+	p, err := probing.NewPinger("127.0.0.1")
+	if err != nil {
+		return false
+	}
+	p.Count = 1
+	p.Timeout = 1 * time.Second
+	return p.Run() == nil
+}
 
 func TestIntegration_AgentLoop(t *testing.T) {
 	// Build the agent binary
@@ -25,6 +38,11 @@ func TestIntegration_AgentLoop(t *testing.T) {
 	// Start a mock server to act as:
 	//    The Target (HTTP 200)
 	//    The Alert Endpoint (Receives POST)
+	pingAvailable := canPing()
+	if !pingAvailable {
+		t.Log("Ping not available (no raw socket permission), skipping ping assertions")
+	}
+
 	httpAlertReceived := make(chan bool, 1)
 	pingAlertReceived := make(chan bool, 1)
 	udpAlertReceived := make(chan bool, 1)
@@ -92,6 +110,24 @@ func TestIntegration_AgentLoop(t *testing.T) {
 	}
 	defer func() { _ = os.Remove(configFile.Name()) }()
 
+	pingServiceConfig := ""
+	if pingAvailable {
+		pingServiceConfig = fmt.Sprintf(`
+  - name: "Integration Ping Service"
+    type: "ping"
+    interval: "1s"
+    timeout: "500ms"
+    retries: 0
+    targets: ["127.0.0.1"]
+    target_mode: "any"
+    ping: {}
+    monitor_endpoint:
+      retries: 0
+      success:
+        url: "%s/alert/ping-success?duration={%%%%duration%%%%}"
+`, ts.URL)
+	}
+
 	configContent := fmt.Sprintf(`
 global:
   notifier:
@@ -126,32 +162,20 @@ services:
       failure:
         url: "%[1]s/alert/failure?duration={%%duration%%}"
 
-  - name: "Integration Ping Service"
-    type: "ping"
-    interval: "1s"
-    timeout: "500ms"
-    retries: 0
-    targets: ["127.0.0.1"]
-    target_mode: "any"
-    ping: {}
-    monitor_endpoint:
-      retries: 0
-      success:
-        url: "%[1]s/alert/ping-success?duration={%%duration%%}"
-
+%[3]s
   - name: "Integration UDP Service"
     type: "udp"
     interval: "1s"
     timeout: "500ms"
     retries: 0
-    targets: ["127.0.0.1:%d"]
+    targets: ["127.0.0.1:%[2]d"]
     target_mode: "any"
     udp: {}
     monitor_endpoint:
       retries: 0
       success:
         url: "%[1]s/alert/udp-success?duration={%%duration%%}"
-`, ts.URL, udpPort)
+`, ts.URL, udpPort, pingServiceConfig)
 
 	if _, err := configFile.Write([]byte(configContent)); err != nil {
 		t.Fatal(err)
@@ -172,7 +196,7 @@ services:
 	// Wait for Alerts (fast with -delay 0)
 	timeout := time.After(5 * time.Second)
 	gotHTTP := false
-	gotPing := false
+	gotPing := !pingAvailable // treat as already received when ping is unavailable
 	gotUDP := false
 
 	for !gotHTTP || !gotPing || !gotUDP {
