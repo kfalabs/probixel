@@ -488,11 +488,18 @@ type WireguardConfig struct {
 	Addresses           string `yaml:"addresses"`
 	AllowedIPs          string `yaml:"allowed_ips"`
 	PersistentKeepalive int    `yaml:"persistent_keepalive"`
+	MTU                 int    `yaml:"mtu,omitempty"`
 	MaxAge              string `yaml:"max_age"`
 	RestartThreshold    *int   `yaml:"restart_threshold,omitempty"`
 }
 
 func (w *WireguardConfig) validateAndSetDefaults() error {
+	if w.MTU == 0 {
+		w.MTU = 1420
+	} else if w.MTU < 1280 || w.MTU > 1500 {
+		return fmt.Errorf("mtu must be between 1280 and 1500")
+	}
+
 	if w.RestartThreshold == nil {
 		one := 1
 		w.RestartThreshold = &one

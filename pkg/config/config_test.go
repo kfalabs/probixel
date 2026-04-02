@@ -1597,6 +1597,71 @@ func TestValidate_TunnelWireguardNegativeThreshold(t *testing.T) {
 	}
 }
 
+func TestValidate_WireguardMTUDefault(t *testing.T) {
+	wg := &WireguardConfig{
+		Endpoint:   "1.2.3.4:51820",
+		PublicKey:  "pub",
+		PrivateKey: "priv",
+		Addresses:  "10.0.0.1/32",
+	}
+	if err := wg.validateAndSetDefaults(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wg.MTU != 1420 {
+		t.Errorf("expected default MTU 1420, got %d", wg.MTU)
+	}
+}
+
+func TestValidate_WireguardMTUCustom(t *testing.T) {
+	wg := &WireguardConfig{
+		Endpoint:   "1.2.3.4:51820",
+		PublicKey:  "pub",
+		PrivateKey: "priv",
+		Addresses:  "10.0.0.1/32",
+		MTU:        1400,
+	}
+	if err := wg.validateAndSetDefaults(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wg.MTU != 1400 {
+		t.Errorf("expected MTU 1400, got %d", wg.MTU)
+	}
+}
+
+func TestValidate_WireguardMTUTooLow(t *testing.T) {
+	wg := &WireguardConfig{
+		Endpoint:   "1.2.3.4:51820",
+		PublicKey:  "pub",
+		PrivateKey: "priv",
+		Addresses:  "10.0.0.1/32",
+		MTU:        1000,
+	}
+	err := wg.validateAndSetDefaults()
+	if err == nil {
+		t.Fatal("expected error for MTU below 1280")
+	}
+	if !strings.Contains(err.Error(), "mtu must be between 1280 and 1500") {
+		t.Errorf("error %q does not mention mtu range", err.Error())
+	}
+}
+
+func TestValidate_WireguardMTUTooHigh(t *testing.T) {
+	wg := &WireguardConfig{
+		Endpoint:   "1.2.3.4:51820",
+		PublicKey:  "pub",
+		PrivateKey: "priv",
+		Addresses:  "10.0.0.1/32",
+		MTU:        9000,
+	}
+	err := wg.validateAndSetDefaults()
+	if err == nil {
+		t.Fatal("expected error for MTU above 1500")
+	}
+	if !strings.Contains(err.Error(), "mtu must be between 1280 and 1500") {
+		t.Errorf("error %q does not mention mtu range", err.Error())
+	}
+}
+
 func TestValidate_WireguardNegativeThreshold(t *testing.T) {
 	validMonitor := MonitorEndpointConfig{
 		Success: EndpointConfig{URL: "http://ok"},

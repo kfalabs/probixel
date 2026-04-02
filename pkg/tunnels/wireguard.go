@@ -90,7 +90,7 @@ func (t *WireguardTunnel) initializeLocked() error {
 		tunDev, netst, err2 = netstack.CreateNetTUN(
 			[]netip.Addr{localAddr},
 			[]netip.Addr{}, // DNS
-			1420,           // MTU
+			t.cfg.MTU,
 		)
 		if err2 != nil {
 			return fmt.Errorf("failed to create netstack TUN: %w", err2)

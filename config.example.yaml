@@ -33,6 +33,7 @@ tunnels:
       public_key: "..."
       private_key: "..."
       addresses: "10.64.222.21/32"
+      # mtu: 1420             # Optional: tunnel MTU (default: 1420, range: 1280-1500)
       restart_threshold: 1   # Optional: failures before triggering restart (default: 1)
   secure-ssh:
     type: "ssh"
@@ -135,6 +136,7 @@ services:
       public_key: "..."
       private_key: "..."
       addresses: "10.64.222.25/32"
+      # mtu: 1420
       max_age: "10m"
       restart_threshold: 3 # Wait for 3 failures before restarting this manual tunnel
     monitor_endpoint:

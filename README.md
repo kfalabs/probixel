@@ -205,6 +205,7 @@ tunnels:
       public_key: "..."
       private_key: "..."
       addresses: "10.64.0.5/32"
+      mtu: 1400             # Optional (default: 1420, range: 1280-1500)
       restart_threshold: 1 # Optional, min 1. Number of failures before triggering a restart.
   secure-ssh:
     type: "ssh"
@@ -425,7 +426,7 @@ Monitors a WireGuard VPN tunnel health via handshake timestamps. No external tar
 - **Validation Rules**:
   - **Exclusivity**: Exactly one of root-level `tunnel` OR an inline `wireguard:` block must be present.
   - **Type Safety**: If a root `tunnel` is referenced, it MUST be of type `wireguard`.
-- **WireGuard Block**: `max_age` (required, e.g., "5m"), `restart_threshold` (optional, default 1), `endpoint`, `public_key`, `private_key`, `addresses`, `preshared_key` (optional), `allowed_ips` (optional), `persistent_keepalive` (optional)
+- **WireGuard Block**: `max_age` (required, e.g., "5m"), `restart_threshold` (optional, default 1), `endpoint`, `public_key`, `private_key`, `addresses`, `preshared_key` (optional), `allowed_ips` (optional), `persistent_keepalive` (optional), `mtu` (optional, default 1420)
 - **Behavior**: 
   - Monitors the WireGuard handshake timestamp via the device interface
   - Reports success if handshake is within `max_age`
