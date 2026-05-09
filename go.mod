@@ -3,7 +3,7 @@ module probixel
 go 1.26.1
 
 require (
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/goccy/go-yaml v1.19.2
 	github.com/prometheus-community/pro-bing v0.8.0
 	github.com/tidwall/gjson v1.18.0
