@@ -6,7 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/prometheus-community/pro-bing v0.8.0
-	github.com/tidwall/gjson v1.18.0
+	github.com/tidwall/gjson v1.19.0
 	golang.org/x/crypto v0.49.0
 	golang.org/x/net v0.52.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
