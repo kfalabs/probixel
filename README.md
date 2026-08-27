@@ -1,5 +1,5 @@
 # Probixel
-![Coverage](https://img.shields.io/badge/Coverage-97.9%25-brightgreen)
+![Coverage](https://img.shields.io/badge/Coverage-96.7%25-brightgreen)
 
 A lightweight, configurable monitoring agent written in Go that checks the health of various services and sends alerts to configured endpoints such as Healthchecks.io, Uptime Kuma, Gatus, and more.
 
