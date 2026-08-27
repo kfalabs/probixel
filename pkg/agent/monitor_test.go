@@ -19,8 +19,9 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+//go:fix inline
 func ptrInt(i int) *int {
-	return &i
+	return new(i)
 }
 
 type mockProbe struct {
@@ -271,8 +272,7 @@ func TestCheckAndPush_PendingResult(t *testing.T) {
 }
 
 func TestRunServiceMonitor_InvalidInterval(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	svc := config.Service{
 		Name:     "invalid-interval-svc",
@@ -347,7 +347,7 @@ func TestCheckAndPush_ProbeRetries(t *testing.T) {
 	cfg := &config.Config{
 		Global: config.GlobalConfig{
 			Monitor: config.MonitorConfig{
-				Retries: ptrInt(3),
+				Retries: new(3),
 			},
 		},
 		Services: []config.Service{
@@ -401,7 +401,7 @@ func TestCheckAndPush_ProbeRetries_Exemptions(t *testing.T) {
 	cfg := &config.Config{
 		Global: config.GlobalConfig{
 			Monitor: config.MonitorConfig{
-				Retries: ptrInt(3),
+				Retries: new(3),
 			},
 		},
 		Services: []config.Service{
@@ -434,7 +434,7 @@ func TestCheckAndPush_ServiceLevelRetries(t *testing.T) {
 	cfg := &config.Config{
 		Global: config.GlobalConfig{
 			Monitor: config.MonitorConfig{
-				Retries: ptrInt(5), // global retries
+				Retries: new(5), // global retries
 			},
 		},
 		Services: []config.Service{
@@ -467,7 +467,7 @@ func TestCheckAndPush_ProbeRetriesWithError(t *testing.T) {
 	cfg := &config.Config{
 		Global: config.GlobalConfig{
 			Monitor: config.MonitorConfig{
-				Retries: ptrInt(2),
+				Retries: new(2),
 			},
 		},
 		Services: []config.Service{
@@ -504,8 +504,7 @@ func (p *panicProbe) Check(_ context.Context, _ string) (monitor.Result, error) 
 }
 
 func TestRunServiceMonitor_RecoverFromPanic(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	svc := config.Service{
 		Name:     "panic-service",
@@ -553,7 +552,7 @@ func TestCheckAndPush_PusherError(t *testing.T) {
 					Success: config.EndpointConfig{
 						URL: "http://127.0.0.1:1/nonexistent",
 					},
-					Retries: ptrInt(0),
+					Retries: new(0),
 				},
 			},
 		},

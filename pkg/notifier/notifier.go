@@ -218,7 +218,7 @@ func (p *Pusher) Push(ctx context.Context, serviceName string, result monitor.Re
 		}
 
 		if attempt > 0 {
-			shift := min(attempt-1, 62)                                         //nolint:gosec // G115: shift is bounded [0,62] by min()
+			shift := min(attempt-1, 62)                                       //nolint:gosec // G115: shift is bounded [0,62] by min()
 			backoff := time.Duration(1<<uint(shift)) * 500 * time.Millisecond //nolint:gosec // G115: shift is bounded [0,62] by min()
 			select {
 			case <-time.After(backoff):

@@ -103,7 +103,6 @@ func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, erro
 		}, nil
 	}
 
-
 	if dev == nil {
 		return Result{
 			Success:   false,
@@ -211,10 +210,10 @@ func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, erro
 }
 
 func parseLatestHandshake(uapi string) (time.Time, error) {
-	lines := strings.Split(uapi, "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "last_handshake_time_sec=") {
-			secStr := strings.TrimPrefix(line, "last_handshake_time_sec=")
+	lines := strings.SplitSeq(uapi, "\n")
+	for line := range lines {
+		if after, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {
+			secStr := after
 			var sec int64
 			if _, err := fmt.Sscanf(secStr, "%d", &sec); err != nil {
 				return time.Time{}, err

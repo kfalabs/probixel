@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
+//go:fix inline
 func ptrInt(i int) *int {
-	return &i
+	return new(i)
 }
 
 func TestLoadConfig(t *testing.T) {
@@ -2152,10 +2153,10 @@ func TestValidate_ValidTimeouts(t *testing.T) {
 				URL:      "http://example.com",
 				Interval: "10s",
 				Timeout:  "5s",
-				Retries:  ptrInt(0),
+				Retries:  new(0),
 				HTTP:     &HTTPConfig{},
 				MonitorEndpoint: MonitorEndpointConfig{
-					Retries: ptrInt(0),
+					Retries: new(0),
 					Success: EndpointConfig{URL: "http://ok"},
 				},
 			},

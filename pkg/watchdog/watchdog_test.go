@@ -675,7 +675,7 @@ services:
 	time.Sleep(50 * time.Millisecond)
 
 	// Trigger multiple rapid writes (debounce should handle this)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		newCfg := fmt.Sprintf(`
 global:
   default_interval: "50ms"
@@ -1168,8 +1168,7 @@ func TestWatchdog_WatcherClose(t *testing.T) {
 	}
 
 	wd := NewWatchdog("dummy.yaml", cfg)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Manually create a watcher and close it to trigger !ok paths
 	watcher, err := fsnotify.NewWatcher()

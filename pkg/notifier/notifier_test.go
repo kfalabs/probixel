@@ -15,12 +15,14 @@ import (
 	"time"
 )
 
+//go:fix inline
 func ptr(s string) *string {
-	return &s
+	return new(s)
 }
 
+//go:fix inline
 func ptrInt(i int) *int {
-	return &i
+	return new(i)
 }
 
 func TestPusher_Push(t *testing.T) {
@@ -92,7 +94,7 @@ func TestPusher_Push_Failure(t *testing.T) {
 	}
 	res := monitor.Result{Success: true}
 
-	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{Retries: ptrInt(0)})
+	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{Retries: new(0)})
 	if err == nil {
 		t.Error("Expected error from 500 response, got nil")
 	}
@@ -249,7 +251,7 @@ func TestPusher_Push_DoError(t *testing.T) {
 		Success: config.EndpointConfig{URL: "http://127.0.0.1:1"},
 	}
 
-	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{Retries: ptrInt(0)})
+	err := pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{Retries: new(0)})
 	if err == nil {
 		t.Error("Expected error from failing Do(), got nil")
 	}
@@ -270,7 +272,7 @@ func TestPushInsecure(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	globalCfg := config.GlobalMonitorEndpointConfig{Retries: ptrInt(0)}
+	globalCfg := config.GlobalMonitorEndpointConfig{Retries: new(0)}
 
 	t.Run("Fail with default client (TLS verification on)", func(t *testing.T) {
 		endpointCfg := config.MonitorEndpointConfig{
@@ -342,7 +344,7 @@ func TestPusher_RateLimit(t *testing.T) {
 	defer testServer.Close()
 
 	pusher := NewPusher()
-	pusher.SetRateLimit(ptr("100ms"))
+	pusher.SetRateLimit(new("100ms"))
 
 	alertCfg := config.MonitorEndpointConfig{
 		Success: config.EndpointConfig{URL: testServer.URL},
@@ -351,7 +353,7 @@ func TestPusher_RateLimit(t *testing.T) {
 
 	start := time.Now()
 	// Push 3 times
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_ = pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	}
 	duration := time.Since(start)
@@ -367,10 +369,10 @@ func TestPusher_RateLimit(t *testing.T) {
 
 func TestPusher_SetRateLimit_Invalid(t *testing.T) {
 	pusher := NewPusher()
-	pusher.SetRateLimit(ptr("100ms"))
+	pusher.SetRateLimit(new("100ms"))
 
 	// Set to invalid duration should not change existing rate limit
-	pusher.SetRateLimit(ptr("invalid"))
+	pusher.SetRateLimit(new("invalid"))
 
 	p := pusher
 	p.mu.Lock()
@@ -398,7 +400,7 @@ func TestPusher_DefaultRateLimit(t *testing.T) {
 
 	start := time.Now()
 	// Push 2 times
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_ = pusher.Push(context.Background(), "test-service", res, alertCfg, config.GlobalMonitorEndpointConfig{})
 	}
 	duration := time.Since(start)
@@ -411,10 +413,10 @@ func TestPusher_DefaultRateLimit(t *testing.T) {
 
 func TestPusher_SetRateLimit_Empty(t *testing.T) {
 	pusher := NewPusher()
-	pusher.SetRateLimit(ptr("200ms"))
+	pusher.SetRateLimit(new("200ms"))
 
 	// Empty string should not change the rate limit
-	pusher.SetRateLimit(ptr(""))
+	pusher.SetRateLimit(new(""))
 
 	p := pusher
 	p.mu.Lock()
@@ -430,7 +432,7 @@ func TestPusher_SetRateLimit_Zero(t *testing.T) {
 	pusher := NewPusher()
 
 	// "0" should disable the default 100ms rate limit
-	pusher.SetRateLimit(ptr("0"))
+	pusher.SetRateLimit(new("0"))
 
 	p := pusher
 	p.mu.Lock()
@@ -477,7 +479,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 			},
 			Timeout: "500ms",
 		}
-		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s", Retries: ptrInt(0)}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s", Retries: new(0)}
 
 		err := pusher.Push(context.Background(), "test-service", res, alertCfg, globalCfg)
 		if err == nil {
@@ -492,7 +494,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 			Success: config.EndpointConfig{URL: testServer.URL},
 			Timeout: "50ms",
 		}
-		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s", Retries: ptrInt(0)}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "1s", Retries: new(0)}
 
 		err := pusher.Push(context.Background(), "test-service", res, alertCfg, globalCfg)
 		if err == nil {
@@ -506,7 +508,7 @@ func TestPusher_Push_TimeoutHierarchy(t *testing.T) {
 		alertCfg := config.MonitorEndpointConfig{
 			Success: config.EndpointConfig{URL: testServer.URL},
 		}
-		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "50ms", Retries: ptrInt(0)}
+		globalCfg := config.GlobalMonitorEndpointConfig{Timeout: "50ms", Retries: new(0)}
 
 		err := pusher.Push(context.Background(), "test-service", res, alertCfg, globalCfg)
 		if err == nil {
@@ -542,14 +544,14 @@ func TestPusher_Push_Retries(t *testing.T) {
 	defer testServer.Close()
 
 	pusher := NewPusher()
-	pusher.SetRateLimit(ptr("0")) // Disable rate limit for testing retries
+	pusher.SetRateLimit(new("0")) // Disable rate limit for testing retries
 
 	result := monitor.Result{Success: true}
 	endpointCfg := config.MonitorEndpointConfig{
 		Success: config.EndpointConfig{URL: testServer.URL},
 	}
 	globalCfg := config.GlobalMonitorEndpointConfig{
-		Retries: ptrInt(3),
+		Retries: new(3),
 	}
 
 	err := pusher.Push(context.Background(), "test-service", result, endpointCfg, globalCfg)
@@ -571,14 +573,14 @@ func TestPusher_Push_Retries_Exhausted(t *testing.T) {
 	defer testServer.Close()
 
 	pusher := NewPusher()
-	pusher.SetRateLimit(ptr("0"))
+	pusher.SetRateLimit(new("0"))
 
 	result := monitor.Result{Success: true}
 	endpointCfg := config.MonitorEndpointConfig{
 		Success: config.EndpointConfig{URL: testServer.URL},
 	}
 	globalCfg := config.GlobalMonitorEndpointConfig{
-		Retries: ptrInt(2),
+		Retries: new(2),
 	}
 
 	err := pusher.Push(context.Background(), "test-service", result, endpointCfg, globalCfg)
@@ -600,7 +602,7 @@ func TestPusher_Push_Retries_ServiceOverride(t *testing.T) {
 	defer testServer.Close()
 
 	pusher := NewPusher()
-	pusher.SetRateLimit(ptr("0"))
+	pusher.SetRateLimit(new("0"))
 
 	result := monitor.Result{Success: true}
 	retriesOverride := 1
@@ -609,7 +611,7 @@ func TestPusher_Push_Retries_ServiceOverride(t *testing.T) {
 		Retries: &retriesOverride,
 	}
 	globalCfg := config.GlobalMonitorEndpointConfig{
-		Retries: ptrInt(5), // Should be ignored
+		Retries: new(5), // Should be ignored
 	}
 
 	_ = pusher.Push(context.Background(), "test-service", result, endpointCfg, globalCfg)
@@ -687,7 +689,7 @@ func TestPusher_Push_ContextCancelledBetweenRetries(t *testing.T) {
 	defer testServer.Close()
 
 	pusher := NewPusher()
-	pusher.SetRateLimit(ptr("0"))
+	pusher.SetRateLimit(new("0"))
 
 	var ctx context.Context
 	ctx, cancel = context.WithCancel(context.Background())
@@ -698,7 +700,7 @@ func TestPusher_Push_ContextCancelledBetweenRetries(t *testing.T) {
 		Success: config.EndpointConfig{URL: testServer.URL},
 	}
 	globalCfg := config.GlobalMonitorEndpointConfig{
-		Retries: ptrInt(10),
+		Retries: new(10),
 	}
 
 	err := pusher.Push(ctx, "test-service", result, endpointCfg, globalCfg)
@@ -713,7 +715,7 @@ func TestPusher_Push_ContextCancelledBetweenRetries(t *testing.T) {
 
 func TestPusher_Push_PreCancelledContext(t *testing.T) {
 	pusher := NewPusher()
-	pusher.SetRateLimit(ptr("0"))
+	pusher.SetRateLimit(new("0"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately

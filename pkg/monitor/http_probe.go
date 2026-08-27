@@ -352,8 +352,8 @@ func (p *HTTPProbe) parseStatusCodesOnce() {
 	if p.AcceptedStatusCodes == "" {
 		return
 	}
-	parts := strings.Split(p.AcceptedStatusCodes, ",")
-	for _, part := range parts {
+	parts := strings.SplitSeq(p.AcceptedStatusCodes, ",")
+	for part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue

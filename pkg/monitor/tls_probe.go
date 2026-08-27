@@ -55,8 +55,8 @@ func (p *TLSProbe) Check(ctx context.Context, target string) (Result, error) {
 	// Handle tls:// scheme if present
 	for i, t := range targets {
 		t = strings.TrimSpace(t)
-		if strings.HasPrefix(t, "tls://") {
-			targets[i] = strings.TrimPrefix(t, "tls://")
+		if after, ok := strings.CutPrefix(t, "tls://"); ok {
+			targets[i] = after
 		} else {
 			targets[i] = t
 		}

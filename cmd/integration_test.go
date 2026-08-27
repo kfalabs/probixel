@@ -287,7 +287,7 @@ services:
 func TestIntegration_InvalidConfig(t *testing.T) {
 	// Build the agent binary
 	agentBin := filepath.Join(os.TempDir(), "probixel-invalid-cfg-test")
-	buildCmd := exec.CommandContext(context.Background(),"go", "build", "-o", agentBin, ".")
+	buildCmd := exec.CommandContext(context.Background(), "go", "build", "-o", agentBin, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
@@ -305,7 +305,7 @@ func TestIntegration_InvalidConfig(t *testing.T) {
 	pidFile := filepath.Join(os.TempDir(), "probixel-invalid.pid")
 	defer func() { _ = os.Remove(pidFile) }()
 
-	cmd := exec.CommandContext(context.Background(),agentBin, "-config", configPath, "-pidfile", pidFile)
+	cmd := exec.CommandContext(context.Background(), agentBin, "-config", configPath, "-pidfile", pidFile)
 	err = cmd.Run()
 	if err == nil {
 		t.Error("Expected agent to fail with invalid config, but it succeeded")
@@ -315,14 +315,14 @@ func TestIntegration_InvalidConfig(t *testing.T) {
 func TestIntegration_MissingConfigFile(t *testing.T) {
 	// Build the agent binary
 	agentBin := filepath.Join(os.TempDir(), "probixel-missing-cfg-test")
-	buildCmd := exec.CommandContext(context.Background(),"go", "build", "-o", agentBin, ".")
+	buildCmd := exec.CommandContext(context.Background(), "go", "build", "-o", agentBin, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
 	defer func() { _ = os.Remove(agentBin) }()
 
 	// Run agent with missing config - should fail
-	cmd := exec.CommandContext(context.Background(),agentBin, "-config", "/nonexistent/path/config.yaml")
+	cmd := exec.CommandContext(context.Background(), agentBin, "-config", "/nonexistent/path/config.yaml")
 	err := cmd.Run()
 	if err == nil {
 		t.Error("Expected agent to fail with missing config file, but it succeeded")
@@ -332,7 +332,7 @@ func TestIntegration_MissingConfigFile(t *testing.T) {
 func TestIntegration_GracefulShutdown(t *testing.T) {
 	// Build the agent binary
 	agentBin := filepath.Join(os.TempDir(), "probixel-shutdown-test")
-	buildCmd := exec.CommandContext(context.Background(),"go", "build", "-o", agentBin, ".")
+	buildCmd := exec.CommandContext(context.Background(), "go", "build", "-o", agentBin, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build agent: %v\n%s", err, out)
 	}
@@ -358,7 +358,7 @@ services:
 	pidFile := filepath.Join(os.TempDir(), "probixel-shutdown.pid")
 	defer func() { _ = os.Remove(pidFile) }()
 
-	cmd := exec.CommandContext(context.Background(),agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0")
+	cmd := exec.CommandContext(context.Background(), agentBin, "-config", configPath, "-pidfile", pidFile, "-delay", "0")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start agent: %v", err)
 	}

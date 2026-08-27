@@ -15,8 +15,7 @@ import (
 )
 
 func TestRun_InvalidConfigPath(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	pidFile := filepath.Join(t.TempDir(), "test.pid")
 	err := run(ctx, "/nonexistent/config.yaml", pidFile, 0)
@@ -29,8 +28,7 @@ func TestRun_InvalidConfigPath(t *testing.T) {
 }
 
 func TestRun_InvalidPidFile(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := run(ctx, "config.yaml", "/nonexistent/dir/test.pid", 0)
 	if err == nil {

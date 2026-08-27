@@ -499,9 +499,7 @@ func TestWireguardProbe_Check_InvalidMaxAgeFromTunnel(t *testing.T) {
 	}
 
 	tunnel := &mockWireguardTunnel{
-		MockTunnel: tunnels.MockTunnel{
-			IsStabilizedResult: true,
-		},
+		IsStabilizedResult: true,
 		config: &config.WireguardConfig{
 			MaxAge: "invalid", // This should trigger the tunnel config fallback error
 		},
@@ -533,9 +531,7 @@ func TestWireguardProbe_Check_TunnelConfigFallbackValid(t *testing.T) {
 	}
 
 	tunnel := &mockWireguardTunnel{
-		MockTunnel: tunnels.MockTunnel{
-			IsStabilizedResult: true,
-		},
+		IsStabilizedResult: true,
 		config: &config.WireguardConfig{
 			MaxAge: "5m", // Valid max_age from tunnel config
 		},

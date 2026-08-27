@@ -29,10 +29,10 @@ func TestDockerProbe_Check_Proxy(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"State": map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"State": map[string]any{
 				"Status": "running",
-				"Health": map[string]interface{}{
+				"Health": map[string]any{
 					"Status": "healthy",
 				},
 			},
@@ -87,8 +87,8 @@ func TestDockerProbe_Check_UnixSocket(t *testing.T) {
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"State": map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"State": map[string]any{
 				"Status": "running",
 			},
 		})
@@ -139,10 +139,10 @@ func TestDockerProbe_Check_ContainerStatuses(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"State": map[string]interface{}{
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"State": map[string]any{
 						"Status": tt.status,
-						"Health": map[string]interface{}{
+						"Health": map[string]any{
 							"Status": tt.healthStatus,
 						},
 					},
@@ -394,8 +394,8 @@ func TestDockerProbe_Check_MultiTarget(t *testing.T) {
 			return
 		}
 
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"State": map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"State": map[string]any{
 				"Status": status,
 			},
 		})

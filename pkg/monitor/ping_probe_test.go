@@ -15,7 +15,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-
 func TestPingProbe_Check(t *testing.T) {
 	oldPing := pingFunc
 	defer func() { pingFunc = oldPing }()

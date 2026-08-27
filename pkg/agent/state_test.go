@@ -39,7 +39,7 @@ func TestConfigState_ThreadSafety(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Multiple writers
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		wg.Add(1)
 		go func(val int) {
 			defer wg.Done()
@@ -49,12 +49,10 @@ func TestConfigState_ThreadSafety(t *testing.T) {
 	}
 
 	// Multiple readers
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 100 {
+		wg.Go(func() {
 			_ = state.Get()
-		}()
+		})
 	}
 
 	wg.Wait()

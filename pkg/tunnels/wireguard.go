@@ -135,7 +135,7 @@ func (t *WireguardTunnel) initializeLocked() error {
 	if allowedIPs == "" {
 		allowedIPs = "0.0.0.0/0"
 	}
-	for _, cidr := range strings.Split(allowedIPs, ",") {
+	for cidr := range strings.SplitSeq(allowedIPs, ",") {
 		cidr = strings.TrimSpace(cidr)
 		if cidr != "" {
 			fmt.Fprintf(&b, "allowed_ip=%s\n", cidr)
@@ -267,10 +267,10 @@ func getHandshakeFromDevice(dev WGDevice) time.Time {
 		return time.Time{}
 	}
 
-	lines := strings.Split(uapi, "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "last_handshake_time_sec=") {
-			secStr := strings.TrimPrefix(line, "last_handshake_time_sec=")
+	lines := strings.SplitSeq(uapi, "\n")
+	for line := range lines {
+		if after, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {
+			secStr := after
 			var sec int64
 			if _, err := fmt.Sscanf(secStr, "%d", &sec); err == nil && sec > 0 {
 				return time.Unix(sec, 0)

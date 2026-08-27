@@ -600,8 +600,8 @@ func ParseDuration(s string) (time.Duration, error) {
 		return 0, nil
 	}
 	// Check for 'd' suffix
-	if strings.HasSuffix(s, "d") {
-		daysStr := strings.TrimSuffix(s, "d")
+	if before, ok := strings.CutSuffix(s, "d"); ok {
+		daysStr := before
 		days, err := strconv.Atoi(daysStr)
 		if err != nil {
 			return 0, fmt.Errorf("invalid duration (days): %w", err)
