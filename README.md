@@ -633,6 +633,8 @@ This allows you to set a conservative global timeout while allowing specific slo
 
 ## Development
 
+Development and CI use Go **1.27.0**. Confirm the active toolchain with `go version` before building or testing.
+
 ### Makefile Targets
 
 The `Makefile` provides convenient shortcuts for common development tasks:
@@ -640,7 +642,7 @@ The `Makefile` provides convenient shortcuts for common development tasks:
 | Target | Description |
 |---|---|
 | `make help` | Show available targets |
-| `make test` | Run all Go tests |
+| `make test` | Run all Go tests with race detection, three times |
 | `make lint` | Run `golangci-lint` |
 | `make build-native` | Build native binary |
 | `make run-native` | Run native binary |

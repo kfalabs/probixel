@@ -2,6 +2,8 @@
 
 Probixel is a Go monitoring agent. It reads YAML configuration, runs service probes, sends status notifications, and supports SSH and WireGuard tunnels.
 
+The required Go toolchain is Go **1.27.0**. Keep `go.mod`, Docker, CI workflows, local commands, and documentation aligned with that version.
+
 - `cmd/`: application entry point.
 - `pkg/config/`: configuration parsing and validation.
 - `pkg/monitor/`: probe implementations.

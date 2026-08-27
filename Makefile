@@ -53,8 +53,8 @@ stats: ## Show container resource usage
 clean: ## Remove unused Docker images
 	docker image prune -f
 
-test: ## Run Go tests
-	go test -v ./...
+test: ## Run Go 1.27 tests with race detection (3 runs)
+	go test -v -race -count=3 ./...
 
 lint: ## Run linter
 	golangci-lint run ./...
