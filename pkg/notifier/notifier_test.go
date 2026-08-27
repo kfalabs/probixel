@@ -15,16 +15,6 @@ import (
 	"time"
 )
 
-//go:fix inline
-func ptr(s string) *string {
-	return new(s)
-}
-
-//go:fix inline
-func ptrInt(i int) *int {
-	return new(i)
-}
-
 func TestPusher_Push(t *testing.T) {
 	// Create a test server to mock the alert endpoint
 	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -56,7 +56,11 @@ func SetupWireguardWindows(cfg *config.Config, registry *tunnels.Registry) {
 	tunnelMaxIntervals := make(map[string]time.Duration)
 	for _, svc := range cfg.Services {
 		if svc.Tunnel != "" {
-			interval, err := config.ParseDuration(svc.Interval)
+			intervalStr := svc.Interval
+			if intervalStr == "" {
+				intervalStr = cfg.Global.DefaultInterval
+			}
+			interval, err := config.ParseDuration(intervalStr)
 			if err != nil {
 				continue
 			}

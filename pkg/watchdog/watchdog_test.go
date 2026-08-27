@@ -10,14 +10,23 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"probixel/pkg/agent"
 	"probixel/pkg/config"
+	"probixel/pkg/tunnels"
 
 	"github.com/fsnotify/fsnotify"
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
+
+type retryingWGDevice struct{}
+
+func (*retryingWGDevice) IpcGet() (string, error) { return "", nil }
+func (*retryingWGDevice) IpcSet(string) error     { return nil }
+func (*retryingWGDevice) Close()                  {}
 
 func TestWatchdog_Lifecycle(t *testing.T) {
 	// Create minimal valid config
@@ -314,6 +323,63 @@ services:
 	}
 }
 
+func TestWatchdog_RegistersFailedWireguardTunnelForSupervisorRecovery(t *testing.T) {
+	originalFactory := newWireguardTunnel
+	defer func() { newWireguardTunnel = originalFactory }()
+
+	var attempts atomic.Int32
+	recovered := &retryingWGDevice{}
+	newWireguardTunnel = func(name string, cfg *config.WireguardConfig) *tunnels.WireguardTunnel {
+		tunnel := tunnels.NewWireguardTunnel(name, cfg)
+		tunnel.SetDeviceFactory(func() (tunnels.WGDevice, *netstack.Net, error) {
+			if attempts.Add(1) == 1 {
+				return nil, nil, fmt.Errorf("initial device unavailable")
+			}
+			return recovered, &netstack.Net{}, nil
+		})
+		return tunnel
+	}
+
+	startingWindow := StartingWindow
+	StartingWindow = 0
+	defer func() { StartingWindow = startingWindow }()
+
+	cfg := &config.Config{
+		Tunnels: map[string]config.TunnelConfig{
+			"wg0": {Type: "wireguard", Wireguard: &config.WireguardConfig{}},
+		},
+	}
+	wd := NewWatchdog("", cfg)
+	done := make(chan struct{})
+	go func() {
+		wd.Start(context.Background())
+		close(done)
+	}()
+	defer func() {
+		wd.Stop()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("watchdog did not stop")
+		}
+	}()
+
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		tunnel, registered := wd.tunnelRegistry.Get("wg0")
+		if registered {
+			if wgTunnel, ok := tunnel.(*tunnels.WireguardTunnel); ok && wgTunnel.Device() == recovered {
+				break
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("failed tunnel was not registered and recovered after %d attempts", attempts.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 func TestWatchdog_ReloadTrigger(t *testing.T) {
 	configFile, err := os.CreateTemp("", "reload_trigger_test_*.yaml")
 	if err != nil {
@@ -557,7 +623,7 @@ services:
       success:
         url: "%s"
 `
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(newCfgStr, MockAlertServerURL)), 0644); err != nil {
+	if err := os.WriteFile(configPath, fmt.Appendf(nil, newCfgStr, MockAlertServerURL), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -848,7 +914,7 @@ services:
       success:
         url: "%s"
 `
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(newCfgStr, MockAlertServerURL)), 0644); err != nil {
+	if err := os.WriteFile(configPath, fmt.Appendf(nil, newCfgStr, MockAlertServerURL), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -925,7 +991,7 @@ services:
       success:
         url: "%s"
 `
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(newCfgStr, MockAlertServerURL)), 0644); err != nil {
+	if err := os.WriteFile(configPath, fmt.Appendf(nil, newCfgStr, MockAlertServerURL), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1363,7 +1429,7 @@ services:
       success:
         url: "%s"
 `
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(newCfgStr, MockAlertServerURL)), 0644); err != nil {
+	if err := os.WriteFile(configPath, fmt.Appendf(nil, newCfgStr, MockAlertServerURL), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1680,7 +1746,7 @@ services:
       success:
         url: "%s"
 `
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(newCfgStr, MockAlertServerURL)), 0644); err != nil { //nolint:gosec
+	if err := os.WriteFile(configPath, fmt.Appendf(nil, newCfgStr, MockAlertServerURL), 0644); err != nil { //nolint:gosec
 		t.Fatal(err)
 	}
 

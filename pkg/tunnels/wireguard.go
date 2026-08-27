@@ -37,13 +37,30 @@ type WireguardTunnel struct {
 	lastSuccessTime time.Time
 	successWindow   time.Duration // Maximum interval of services + 1 minute grace
 	deviceFactory   func() (WGDevice, *netstack.Net, error)
+
+	endpointResolver     func(context.Context, string) (*net.UDPAddr, error)
+	lastResolvedEndpoint *net.UDPAddr
+
+	stabilizationPeriod      time.Duration
+	supervisorInterval       time.Duration
+	supervisorInitialBackoff time.Duration
+	supervisorMaxBackoff     time.Duration
+	supervisorMu             sync.Mutex
+	supervisorCancel         context.CancelFunc
+	supervisorDone           chan struct{}
+	supervisorState          string
 }
 
 func NewWireguardTunnel(name string, cfg *config.WireguardConfig) *WireguardTunnel {
 	return &WireguardTunnel{
-		name:          name,
-		cfg:           cfg,
-		successWindow: 90 * time.Second, // Default: 30s max interval + 60s grace
+		name:                     name,
+		cfg:                      cfg,
+		successWindow:            90 * time.Second, // Default: 30s max interval + 60s grace
+		endpointResolver:         resolveWireguardEndpoint,
+		stabilizationPeriod:      20 * time.Second,
+		supervisorInterval:       30 * time.Second,
+		supervisorInitialBackoff: 5 * time.Second,
+		supervisorMaxBackoff:     time.Minute,
 	}
 }
 
@@ -57,27 +74,69 @@ func (t *WireguardTunnel) Name() string { return t.name }
 func (t *WireguardTunnel) Type() string { return "wireguard" }
 
 func (t *WireguardTunnel) Initialize() error {
+	t.mu.RLock()
+	if t.dev != nil {
+		t.mu.RUnlock()
+		return nil
+	}
+	usesFactory := t.deviceFactory != nil
+	t.mu.RUnlock()
+
+	var resolvedEndpoint *net.UDPAddr
+	if !usesFactory {
+		if err := t.validateStaticConfig(); err != nil {
+			return err
+		}
+		var err error
+		resolvedEndpoint, err = t.resolveEndpoint()
+		if err != nil {
+			return err
+		}
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
 	if t.dev != nil {
 		return nil
 	}
+	if resolvedEndpoint != nil {
+		t.lastResolvedEndpoint = cloneUDPAddr(resolvedEndpoint)
+	}
 
-	return t.initializeLocked()
+	return t.initializeLocked(resolvedEndpoint)
+}
+
+// validateStaticConfig keeps malformed local configuration from being masked by
+// an unavailable DNS resolver. It intentionally performs no network I/O.
+func (t *WireguardTunnel) validateStaticConfig() error {
+	if _, err := netip.ParseAddr(strings.Split(t.cfg.Addresses, "/")[0]); err != nil {
+		return fmt.Errorf("invalid address: %w", err)
+	}
+	if _, err := wgtypes.ParseKey(t.cfg.PrivateKey); err != nil {
+		return fmt.Errorf("invalid private key: %w", err)
+	}
+	if _, err := wgtypes.ParseKey(t.cfg.PublicKey); err != nil {
+		return fmt.Errorf("invalid public key: %w", err)
+	}
+	if t.cfg.PresharedKey != "" {
+		if _, err := wgtypes.ParseKey(t.cfg.PresharedKey); err != nil {
+			return fmt.Errorf("invalid preshared key: %w", err)
+		}
+	}
+	return nil
 }
 
 // initializeLocked performs tunnel setup. Caller MUST hold t.mu.
-func (t *WireguardTunnel) initializeLocked() error {
+func (t *WireguardTunnel) initializeLocked(resolvedEndpoint *net.UDPAddr) error {
 	var tunDev tun.Device
 	var netst *netstack.Net
 
 	if t.deviceFactory != nil {
-		var err error
-		t.dev, t.netst, err = t.deviceFactory()
+		dev, factoryNetst, err := t.deviceFactory()
 		if err != nil {
 			return err
 		}
+		t.dev, t.netst = dev, factoryNetst
 		t.initTime = time.Now()
 		return nil
 	} else {
@@ -97,7 +156,7 @@ func (t *WireguardTunnel) initializeLocked() error {
 		}
 	}
 
-	logger := device.NewLogger(device.LogLevelSilent, fmt.Sprintf("[wg-tunnel:%s] ", t.name))
+	logger := device.NewLogger(device.LogLevelError, fmt.Sprintf("[wg-tunnel:%s] ", t.name))
 	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
 
 	privKey, err := wgtypes.ParseKey(t.cfg.PrivateKey)
@@ -124,12 +183,11 @@ func (t *WireguardTunnel) initializeLocked() error {
 		fmt.Fprintf(&b, "preshared_key=%s\n", hex.EncodeToString(psk[:]))
 	}
 
-	resolvedAddr, err := net.ResolveUDPAddr("udp", t.cfg.Endpoint)
-	if err != nil {
+	if resolvedEndpoint == nil {
 		dev.Close()
-		return fmt.Errorf("failed to resolve wireguard endpoint %q: %w", t.cfg.Endpoint, err)
+		return fmt.Errorf("wireguard endpoint %q was not resolved", t.cfg.Endpoint)
 	}
-	fmt.Fprintf(&b, "endpoint=%s\n", resolvedAddr.String())
+	fmt.Fprintf(&b, "endpoint=%s\n", resolvedEndpoint.String())
 
 	allowedIPs := t.cfg.AllowedIPs
 	if allowedIPs == "" {
@@ -159,7 +217,68 @@ func (t *WireguardTunnel) initializeLocked() error {
 	return nil
 }
 
+func resolveWireguardEndpoint(ctx context.Context, endpoint string) (*net.UDPAddr, error) {
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid wireguard endpoint %q: %w", endpoint, err)
+	}
+
+	portNumber, err := net.LookupPort("udp", port)
+	if err != nil {
+		return nil, fmt.Errorf("invalid wireguard endpoint port %q: %w", port, err)
+	}
+
+	hosts, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve wireguard endpoint %q: %w", endpoint, err)
+	}
+	for _, resolvedHost := range hosts {
+		if ip := net.ParseIP(resolvedHost); ip != nil {
+			return &net.UDPAddr{IP: ip, Port: portNumber}, nil
+		}
+	}
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("failed to resolve wireguard endpoint %q: no addresses found", endpoint)
+	}
+	return nil, fmt.Errorf("failed to resolve wireguard endpoint %q: resolver returned invalid addresses", endpoint)
+}
+
+func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	clone := *addr
+	clone.IP = append(net.IP(nil), addr.IP...)
+	return &clone
+}
+
+// resolveEndpoint bounds DNS resolution and retains the last good result so a
+// temporary DNS outage cannot turn a restart into a permanently dead tunnel.
+func (t *WireguardTunnel) resolveEndpoint() (*net.UDPAddr, error) {
+	t.mu.RLock()
+	resolver := t.endpointResolver
+	endpoint := t.cfg.Endpoint
+	cached := cloneUDPAddr(t.lastResolvedEndpoint)
+	t.mu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resolved, err := resolver(ctx, endpoint)
+	if err == nil {
+		t.mu.Lock()
+		t.lastResolvedEndpoint = cloneUDPAddr(resolved)
+		t.mu.Unlock()
+		return resolved, nil
+	}
+	if cached != nil {
+		log.Printf("[Tunnel:%s] DNS resolution for %q failed: %v; reusing cached endpoint %s", t.name, endpoint, err, cached)
+		return cached, nil
+	}
+	return nil, err
+}
+
 func (t *WireguardTunnel) Stop() {
+	t.stopSupervisor()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.dev != nil {
@@ -176,83 +295,65 @@ func (t *WireguardTunnel) LastInitTime() time.Time {
 	return t.initTime
 }
 
+type wireguardHealthSnapshot struct {
+	dev       WGDevice
+	lastCheck time.Time
+	threshold time.Duration
+}
+
+func (t *WireguardTunnel) healthSnapshot() wireguardHealthSnapshot {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	lastCheck := t.lastSuccessTime
+	if lastCheck.IsZero() {
+		lastCheck = t.initTime
+	}
+	return wireguardHealthSnapshot{dev: t.dev, lastCheck: lastCheck, threshold: t.successWindow}
+}
+
+func tunnelHealthy(lastHandshake, lastCheck time.Time, threshold time.Duration) bool {
+	handshakeHealthy := !lastHandshake.IsZero() && time.Since(lastHandshake) < 5*time.Minute
+	successHealthy := !lastCheck.IsZero() && time.Since(lastCheck) < threshold
+	return handshakeHealthy || successHealthy
+}
+
+// restartIfUnhealthy applies the common restart decision after a handshake read.
+// It returns true only when it closed the same device that was inspected.
+func (t *WireguardTunnel) restartIfUnhealthy(snapshot wireguardHealthSnapshot, lastHandshake time.Time) bool {
+	if snapshot.dev == nil || tunnelHealthy(lastHandshake, snapshot.lastCheck, snapshot.threshold) {
+		return false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.dev == nil || t.dev != snapshot.dev {
+		return false
+	}
+	t.dev.Close()
+	t.dev = nil
+	t.netst = nil
+	t.initTime = time.Time{}
+	return true
+}
+
 // ReportFailure checks tunnel health and restarts if both handshake and success
 // indicators are stale. IpcGet is called outside the lock to avoid deadlocks.
 func (t *WireguardTunnel) ReportFailure() {
-	// Phase 1: Capture state under lock
-	t.mu.Lock()
-	if t.dev == nil {
-		t.mu.Unlock()
+	snapshot := t.healthSnapshot()
+	if snapshot.dev == nil {
 		return
 	}
-	dev := t.dev
-	lastCheckTime := t.lastSuccessTime
-	threshold := t.successWindow
-
-	if lastCheckTime.IsZero() {
-		lastCheckTime = t.initTime
-	}
-	t.mu.Unlock()
-
-	// Phase 2: Blocking IPC call outside the lock
-	lastHandshake := getHandshakeFromDevice(dev)
-
-	// Determine if tunnel is healthy based on EITHER:
-	// 1. Recent handshake (< 5 minutes), OR
-	// 2. Recent success within threshold
-	handshakeHealthy := !lastHandshake.IsZero() && time.Since(lastHandshake) < 5*time.Minute
-	successHealthy := !lastCheckTime.IsZero() && time.Since(lastCheckTime) < threshold
-
-	if handshakeHealthy || successHealthy {
-		// Tunnel is healthy, don't restart
-		if handshakeHealthy && successHealthy {
-			log.Printf("[Tunnel:%s] Failure reported but tunnel healthy: handshake %v ago, last success %v ago",
-				t.name, time.Since(lastHandshake).Round(time.Second), time.Since(lastCheckTime).Round(time.Second))
-		} else if handshakeHealthy {
-			log.Printf("[Tunnel:%s] Failure reported but tunnel healthy: recent handshake %v ago (threshold: 5m0s)",
-				t.name, time.Since(lastHandshake).Round(time.Second))
-		} else {
-			log.Printf("[Tunnel:%s] Failure reported but tunnel healthy: last success %v ago (threshold: %v)",
-				t.name, time.Since(lastCheckTime).Round(time.Second), threshold)
-		}
+	lastHandshake := getHandshakeFromDevice(snapshot.dev)
+	if !t.restartIfUnhealthy(snapshot, lastHandshake) {
 		return
 	}
 
-	// Phase 3: Re-acquire lock for mutation
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Re-check dev hasn't changed while we were unlocked
-	if t.dev == nil || t.dev != dev {
+	t.logSupervisorState("restarting", "[Tunnel:%s] Restarting tunnel after reported failure", t.name)
+	if err := t.Initialize(); err != nil {
+		t.logSupervisorState("retrying", "[Tunnel:%s] Re-initialization failed: %v; supervisor will retry", t.name, err)
 		return
 	}
-
-	// Neither handshake nor success are recent, restart the tunnel
-	log.Printf("[Tunnel:%s] Restarting tunnel: no recent handshake or success (handshake: %v ago, success: %v ago, thresholds: 5m0s / %v)",
-		t.name,
-		func() string {
-			if lastHandshake.IsZero() {
-				return "never"
-			}
-			return time.Since(lastHandshake).Round(time.Second).String()
-		}(),
-		time.Since(lastCheckTime).Round(time.Second),
-		threshold)
-
-	if t.dev != nil {
-		t.dev.Close()
-		t.dev = nil
-	}
-	t.netst = nil
-	t.initTime = time.Time{}
-
-	// Attempt immediate re-initialization
-	log.Printf("[Tunnel:%s] Attempting re-initialization...", t.name)
-	if err := t.initializeLocked(); err != nil {
-		log.Printf("[Tunnel:%s] Re-init failed: %v (will retry on next dial)", t.name, err)
-	} else {
-		log.Printf("[Tunnel:%s] Re-initialized successfully", t.name)
-	}
+	t.logSupervisorState("active", "[Tunnel:%s] Re-initialized successfully", t.name)
 }
 
 // getHandshakeFromDevice retrieves the most recent handshake timestamp from a WireGuard device.
@@ -297,6 +398,142 @@ func (t *WireguardTunnel) SetSuccessWindow(window time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.successWindow = window
+}
+
+func (t *WireguardTunnel) SuccessWindow() time.Duration {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.successWindow
+}
+
+// SetStabilizationPeriod controls how long a newly created tunnel reports
+// Pending. It is primarily useful for deterministic lifecycle tests.
+func (t *WireguardTunnel) SetStabilizationPeriod(period time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stabilizationPeriod = period
+}
+
+// StartSupervisor starts the tunnel's independent recovery loop. It is safe to
+// call more than once; only one loop may run for a tunnel.
+func (t *WireguardTunnel) StartSupervisor(parent context.Context) {
+	t.supervisorMu.Lock()
+	if t.supervisorDone != nil {
+		t.supervisorMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	t.supervisorCancel = cancel
+	t.supervisorDone = done
+	t.supervisorMu.Unlock()
+
+	go func() {
+		defer close(done)
+		defer func() {
+			t.supervisorMu.Lock()
+			if t.supervisorDone == done {
+				t.supervisorDone = nil
+				t.supervisorCancel = nil
+				t.supervisorState = ""
+			}
+			t.supervisorMu.Unlock()
+		}()
+		t.runSupervisor(ctx)
+	}()
+}
+
+func (t *WireguardTunnel) stopSupervisor() {
+	t.supervisorMu.Lock()
+	cancel := t.supervisorCancel
+	done := t.supervisorDone
+	t.supervisorMu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	<-done
+}
+
+func (t *WireguardTunnel) runSupervisor(ctx context.Context) {
+	backoff := t.supervisorInitialBackoff
+	delay := time.Duration(0)
+	for {
+		if !waitForSupervisor(ctx, delay) {
+			return
+		}
+
+		if t.superviseOnce() {
+			backoff = t.supervisorInitialBackoff
+			delay = t.supervisorInterval
+			continue
+		}
+
+		delay = backoff
+		backoff *= 2
+		if backoff > t.supervisorMaxBackoff {
+			backoff = t.supervisorMaxBackoff
+		}
+	}
+}
+
+func waitForSupervisor(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// superviseOnce attempts an unavailable tunnel, or restarts one whose
+// handshake and service-success signals are both stale.
+func (t *WireguardTunnel) superviseOnce() bool {
+	snapshot := t.healthSnapshot()
+	if snapshot.dev == nil {
+		if err := t.Initialize(); err != nil {
+			t.logSupervisorState("retrying", "[Tunnel:%s] Supervisor initialization failed: %v; retrying with backoff", t.name, err)
+			return false
+		}
+		t.logSupervisorState("active", "[Tunnel:%s] Supervisor initialized tunnel", t.name)
+		return true
+	}
+
+	lastHandshake := getHandshakeFromDevice(snapshot.dev)
+	if !t.restartIfUnhealthy(snapshot, lastHandshake) {
+		t.logSupervisorState("active", "[Tunnel:%s] Supervisor sees healthy tunnel", t.name)
+		return true
+	}
+
+	t.logSupervisorState("restarting", "[Tunnel:%s] Supervisor restarting stale tunnel", t.name)
+	if err := t.Initialize(); err != nil {
+		t.logSupervisorState("retrying", "[Tunnel:%s] Supervisor restart failed: %v; retrying with backoff", t.name, err)
+		return false
+	}
+	t.logSupervisorState("active", "[Tunnel:%s] Supervisor restarted tunnel", t.name)
+	return true
+}
+
+func (t *WireguardTunnel) logSupervisorState(state, format string, args ...any) {
+	t.supervisorMu.Lock()
+	changed := t.supervisorState != state
+	if changed {
+		t.supervisorState = state
+	}
+	t.supervisorMu.Unlock()
+	if changed {
+		log.Printf(format, args...)
+	}
 }
 
 // DialContext dials through the WireGuard tunnel. If the tunnel has been destroyed
@@ -344,8 +581,5 @@ func (t *WireguardTunnel) IsStabilized() bool {
 		return false
 	}
 
-	// Use a 20-second stabilization window after tunnel initialization or restart.
-	gracePeriod := 20 * time.Second
-
-	return time.Since(t.initTime) >= gracePeriod
+	return time.Since(t.initTime) >= t.stabilizationPeriod
 }

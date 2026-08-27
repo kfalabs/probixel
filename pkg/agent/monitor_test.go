@@ -19,11 +19,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-//go:fix inline
-func ptrInt(i int) *int {
-	return new(i)
-}
-
 type mockProbe struct {
 	name        string
 	checkResult monitor.Result

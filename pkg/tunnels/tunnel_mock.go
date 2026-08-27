@@ -16,6 +16,7 @@ type MockTunnel struct {
 	LastInitTimeFunc   func() time.Time
 	ReportFailureFunc  func()
 	IsStabilizedResult bool
+	DeviceFunc         func() WGDevice
 }
 
 func (m *MockTunnel) Name() string {
@@ -72,4 +73,11 @@ func (m *MockTunnel) ReportSuccess() {
 
 func (m *MockTunnel) IsStabilized() bool {
 	return m.IsStabilizedResult
+}
+
+func (m *MockTunnel) Device() WGDevice {
+	if m.DeviceFunc != nil {
+		return m.DeviceFunc()
+	}
+	return nil
 }

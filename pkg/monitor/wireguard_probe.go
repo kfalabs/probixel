@@ -20,9 +20,10 @@ type WireguardProbe struct {
 	Config     *config.WireguardConfig
 	targetMode string
 	tunnel     tunnels.Tunnel
-	// Internal fields for manual config (no root tunnel)
-	dev      tunnels.WGDevice
-	initTime time.Time
+	ownsTunnel bool
+
+	// newTunnel provides a small test seam for the inline-tunnel lifecycle.
+	newTunnel func(string, *config.WireguardConfig) *tunnels.WireguardTunnel
 }
 
 func (p *WireguardProbe) SetTunnel(t tunnels.Tunnel) {
@@ -46,29 +47,31 @@ func (p *WireguardProbe) Initialize() error {
 	if p.Config == nil {
 		return fmt.Errorf("wireguard configuration missing")
 	}
-	if p.dev != nil {
-		return nil
-	}
-
 	// Create an ephemeral tunnel if no root tunnel is provided
-	t := tunnels.NewWireguardTunnel("ephemeral", p.Config)
+	newTunnel := p.newTunnel
+	if newTunnel == nil {
+		newTunnel = tunnels.NewWireguardTunnel
+	}
+	t := newTunnel("ephemeral", p.Config)
+	p.tunnel = t
+	p.ownsTunnel = true
 	if err := t.Initialize(); err != nil {
+		p.tunnel = nil
+		p.ownsTunnel = false
 		return err
 	}
-	p.dev = t.Device()
-	p.initTime = t.LastInitTime()
+	t.StartSupervisor(context.Background())
 	return nil
 }
 
-func (p *WireguardProbe) stop() {
-	if p.tunnel != nil {
+// Close releases an inline tunnel and its supervisor. Root tunnels are owned by
+// the watchdog and are deliberately left running here.
+func (p *WireguardProbe) Close() {
+	if p.ownsTunnel && p.tunnel != nil {
 		p.tunnel.Stop()
-		return
 	}
-	if p.dev != nil {
-		p.dev.Close()
-		p.dev = nil
-	}
+	p.tunnel = nil
+	p.ownsTunnel = false
 }
 
 func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, error) {
@@ -84,8 +87,8 @@ func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, erro
 		}, nil
 	}
 
-	dev := p.dev
-	initTime := p.initTime
+	var dev tunnels.WGDevice
+	var initTime time.Time
 	if p.tunnel != nil {
 		initTime = p.tunnel.LastInitTime()
 		if wgTun, ok := p.tunnel.(interface{ Device() tunnels.WGDevice }); ok {
@@ -133,11 +136,7 @@ func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, erro
 
 	lastHandshake, err := parseLatestHandshake(uapi)
 	if err != nil {
-		if p.tunnel != nil {
-			p.tunnel.ReportFailure()
-		} else {
-			p.stop()
-		}
+		p.tunnel.ReportFailure()
 		return Result{
 			Success:   false,
 			Duration:  time.Since(start),
@@ -147,17 +146,8 @@ func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, erro
 	}
 
 	// Stabilization adherence: return Pending if tunnel not stabilized.
-	// This prevents DOWN status during the 20s restart window.
-	var isStabilized bool
-	if p.tunnel != nil {
-		isStabilized = p.tunnel.IsStabilized()
-	} else {
-		// Fallback to internal fixed 20s window if standalone
-		gracePeriod := 20 * time.Second
-		isStabilized = time.Since(initTime) >= gracePeriod
-	}
-
-	if !isStabilized {
+	// This prevents DOWN status during the restart window.
+	if !p.tunnel.IsStabilized() {
 		return Result{
 			Success:   false,
 			Pending:   true,
@@ -168,11 +158,7 @@ func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, erro
 	}
 
 	if lastHandshake.IsZero() {
-		if p.tunnel != nil {
-			p.tunnel.ReportFailure()
-		} else {
-			p.stop()
-		}
+		p.tunnel.ReportFailure()
 		return Result{
 			Success:   false,
 			Pending:   true,
@@ -184,11 +170,7 @@ func (p *WireguardProbe) Check(ctx context.Context, target string) (Result, erro
 
 	age := time.Since(lastHandshake)
 	if age > maxAge {
-		if p.tunnel != nil {
-			p.tunnel.ReportFailure()
-		} else {
-			p.stop()
-		}
+		p.tunnel.ReportFailure()
 		return Result{
 			Success:   false,
 			Duration:  time.Since(start),

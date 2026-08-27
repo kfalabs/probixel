@@ -24,6 +24,8 @@ var ReloadDelay = 10 * time.Second
 // This can be set to 0 in tests to prevent delays.
 var StartingWindow = 10 * time.Second
 
+var newWireguardTunnel = tunnels.NewWireguardTunnel
+
 // Watchdog manages the agent lifecycle, configuration reloads, and service monitors.
 type Watchdog struct {
 	configPath     string
@@ -103,7 +105,7 @@ func (w *Watchdog) run(ctx context.Context) {
 			switch tCfg.Type {
 			case "wireguard":
 				if tCfg.Wireguard != nil {
-					t = tunnels.NewWireguardTunnel(name, tCfg.Wireguard)
+					t = newWireguardTunnel(name, tCfg.Wireguard)
 				}
 			case "ssh":
 				if tCfg.SSH != nil {
@@ -114,10 +116,16 @@ func (w *Watchdog) run(ctx context.Context) {
 			if t != nil {
 				if err := t.Initialize(); err != nil {
 					log.Printf("[Tunnel:%s] Failed to initialize: %v", name, err)
-					continue // Don't register failed tunnels
+				} else {
+					log.Printf("[Tunnel:%s] Initialized", name)
 				}
-				log.Printf("[Tunnel:%s] Initialized", name)
-				_ = w.tunnelRegistry.Register(t)
+				if err := w.tunnelRegistry.Register(t); err != nil {
+					log.Printf("[Tunnel:%s] Failed to register: %v", name, err)
+					continue
+				}
+				if wgTunnel, ok := t.(*tunnels.WireguardTunnel); ok {
+					wgTunnel.StartSupervisor(ctx)
+				}
 			}
 		}
 

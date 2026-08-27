@@ -5,9 +5,23 @@ import (
 	"fmt"
 	"probixel/pkg/config"
 	"probixel/pkg/tunnels"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
+
+func probeWithMockDevice(cfg *config.WireguardConfig, dev tunnels.WGDevice, initialized time.Time) *WireguardProbe {
+	return &WireguardProbe{
+		Config: cfg,
+		tunnel: &tunnels.MockTunnel{
+			DeviceFunc:         func() tunnels.WGDevice { return dev },
+			LastInitTimeFunc:   func() time.Time { return initialized },
+			IsStabilizedResult: true,
+		},
+	}
+}
 
 func TestWireguardProbe_Name(t *testing.T) {
 	p := &WireguardProbe{}
@@ -59,18 +73,17 @@ func TestWireguardProbe_Initialize_NoConfig(t *testing.T) {
 }
 
 func TestWireguardProbe_Initialize_AlreadyInitialized(t *testing.T) {
-	mock := &mockWGDevice{}
+	tunnel := &tunnels.MockTunnel{}
 	p := &WireguardProbe{
 		Config: &config.WireguardConfig{MaxAge: "5m"},
-		dev:    mock,
+		tunnel: tunnel,
 	}
 	err := p.Initialize()
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	// dev should remain the same
-	if p.dev != mock {
-		t.Error("device was unexpectedly replaced")
+	if p.tunnel != tunnel {
+		t.Error("tunnel was unexpectedly replaced")
 	}
 }
 
@@ -106,12 +119,13 @@ func TestWireguardProbe_Initialize_EphemeralTunnel(t *testing.T) {
 
 	// Should create ephemeral tunnel when no tunnel is set
 	if err := p.Initialize(); err == nil {
-		defer p.stop()
+		defer p.Close()
 
-		if p.dev == nil {
+		wgTunnel, ok := p.tunnel.(*tunnels.WireguardTunnel)
+		if !ok || wgTunnel.Device() == nil {
 			t.Error("expected device to be created")
 		}
-		if p.initTime.IsZero() {
+		if p.tunnel.LastInitTime().IsZero() {
 			t.Error("expected initTime to be set")
 		}
 	}
@@ -130,6 +144,42 @@ func TestWireguardProbe_Initialize_EphemeralTunnelError(t *testing.T) {
 	}
 	if !testingContains(err.Error(), "invalid address") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestWireguardProbe_InlineTunnelRecoversAfterStaleHandshake(t *testing.T) {
+	stale := &mockWGDevice{uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", time.Now().Add(-10*time.Minute).Unix())}
+	recovered := &mockWGDevice{}
+	tunnel := tunnels.NewWireguardTunnel("ephemeral", &config.WireguardConfig{MaxAge: "5m"})
+	var created atomic.Int32
+	tunnel.SetDeviceFactory(func() (tunnels.WGDevice, *netstack.Net, error) {
+		if created.Add(1) == 1 {
+			return stale, &netstack.Net{}, nil
+		}
+		return recovered, &netstack.Net{}, nil
+	})
+
+	p := &WireguardProbe{
+		Config:    &config.WireguardConfig{MaxAge: "5m"},
+		newTunnel: func(string, *config.WireguardConfig) *tunnels.WireguardTunnel { return tunnel },
+	}
+	if err := p.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	tunnel.SetStabilizationPeriod(0)
+	tunnel.SetSuccessWindow(time.Millisecond)
+	time.Sleep(2 * time.Millisecond)
+
+	_, err := p.Check(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tunnel.Device(); got != recovered {
+		t.Fatalf("inline tunnel device = %v, want recovered device", got)
+	}
+	if !stale.closed {
+		t.Fatal("expected stale inline device to be closed")
 	}
 }
 
@@ -173,13 +223,7 @@ func TestWireguardProbe_Check_IpcGetError(t *testing.T) {
 	mock := &mockWGDevice{
 		uapiErr: fmt.Errorf("ipc error"),
 	}
-	p := &WireguardProbe{
-		Config: &config.WireguardConfig{
-			MaxAge: "5m",
-		},
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
-	}
+	p := probeWithMockDevice(&config.WireguardConfig{MaxAge: "5m"}, mock, time.Now().Add(-1*time.Hour))
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -196,13 +240,7 @@ func TestWireguardProbe_Check_NoHandshake(t *testing.T) {
 	mock := &mockWGDevice{
 		uapi: "some_other_field=value\n",
 	}
-	p := &WireguardProbe{
-		Config: &config.WireguardConfig{
-			MaxAge: "5m",
-		},
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
-	}
+	p := probeWithMockDevice(&config.WireguardConfig{MaxAge: "5m"}, mock, time.Now().Add(-1*time.Hour))
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -219,13 +257,7 @@ func TestWireguardProbe_Check_ParseError(t *testing.T) {
 	mock := &mockWGDevice{
 		uapi: "last_handshake_time_sec=invalid\n",
 	}
-	p := &WireguardProbe{
-		Config: &config.WireguardConfig{
-			MaxAge: "5m",
-		},
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
-	}
+	p := probeWithMockDevice(&config.WireguardConfig{MaxAge: "5m"}, mock, time.Now().Add(-1*time.Hour))
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -242,13 +274,7 @@ func TestWireguardProbe_Check_RecentHandshake(t *testing.T) {
 	mock := &mockWGDevice{
 		uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", time.Now().Unix()),
 	}
-	p := &WireguardProbe{
-		Config: &config.WireguardConfig{
-			MaxAge: "5m",
-		},
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
-	}
+	p := probeWithMockDevice(&config.WireguardConfig{MaxAge: "5m"}, mock, time.Now().Add(-1*time.Hour))
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -266,13 +292,7 @@ func TestWireguardProbe_Check_StaleHandshake(t *testing.T) {
 	mock := &mockWGDevice{
 		uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", staleTime),
 	}
-	p := &WireguardProbe{
-		Config: &config.WireguardConfig{
-			MaxAge: "5m",
-		},
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
-	}
+	p := probeWithMockDevice(&config.WireguardConfig{MaxAge: "5m"}, mock, time.Now().Add(-1*time.Hour))
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -289,12 +309,10 @@ func TestWireguardProbe_Check_GracePeriod(t *testing.T) {
 	mock := &mockWGDevice{
 		uapi: "last_handshake_time_sec=0\n",
 	}
-	p := &WireguardProbe{
-		Config: &config.WireguardConfig{
-			MaxAge: "5m",
-		},
-		dev:      mock,
-		initTime: time.Now(), // Just initialized
+	p := probeWithMockDevice(&config.WireguardConfig{MaxAge: "5m"}, mock, time.Now())
+	p.tunnel = &tunnels.MockTunnel{
+		DeviceFunc:       func() tunnels.WGDevice { return mock },
+		LastInitTimeFunc: func() time.Time { return time.Now() },
 	}
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
@@ -338,20 +356,19 @@ func TestWireguardProbe_Check_WithTunnel(t *testing.T) {
 }
 
 func TestWireguardProbe_Check_ReportSuccessOnRecentHandshake(t *testing.T) {
-	tunnel := &tunnels.MockTunnel{
-		IsStabilizedResult: true,
-	}
 	mock := &mockWGDevice{
 		uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", time.Now().Unix()),
+	}
+	tunnel := &tunnels.MockTunnel{
+		IsStabilizedResult: true,
+		DeviceFunc:         func() tunnels.WGDevice { return mock },
 	}
 
 	p := &WireguardProbe{
 		Config: &config.WireguardConfig{
 			MaxAge: "5m",
 		},
-		tunnel:   tunnel,
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
+		tunnel: tunnel,
 	}
 
 	res, err := p.Check(context.Background(), "")
@@ -364,26 +381,34 @@ func TestWireguardProbe_Check_ReportSuccessOnRecentHandshake(t *testing.T) {
 	// This should have called tunnel.ReportSuccess()
 }
 
-func TestWireguardProbe_Stop(t *testing.T) {
+func TestWireguardProbe_CloseStopsOwnedInlineTunnel(t *testing.T) {
 	mock := &mockWGDevice{}
+	tunnel := tunnels.NewWireguardTunnel("ephemeral", &config.WireguardConfig{})
+	tunnel.SetDeviceFactory(func() (tunnels.WGDevice, *netstack.Net, error) {
+		return mock, nil, nil
+	})
+	if err := tunnel.Initialize(); err != nil {
+		t.Fatal(err)
+	}
 	p := &WireguardProbe{
 		Config: &config.WireguardConfig{
 			MaxAge: "5m",
 		},
-		dev: mock,
+		tunnel:     tunnel,
+		ownsTunnel: true,
 	}
 
-	p.stop()
+	p.Close()
 
-	if p.dev != nil {
-		t.Error("expected device to be nil after stop")
+	if p.tunnel != nil {
+		t.Error("expected inline tunnel to be released after close")
 	}
 	if !mock.closed {
 		t.Error("expected device to be closed")
 	}
 }
 
-func TestWireguardProbe_Stop_WithTunnel(t *testing.T) {
+func TestWireguardProbe_CloseDoesNotStopRootTunnel(t *testing.T) {
 	tunnel := tunnels.NewWireguardTunnel("test", &config.WireguardConfig{})
 	p := &WireguardProbe{
 		Config: &config.WireguardConfig{
@@ -392,8 +417,8 @@ func TestWireguardProbe_Stop_WithTunnel(t *testing.T) {
 		tunnel: tunnel,
 	}
 
-	// stop should call tunnel.Stop(), which should not crash
-	p.stop()
+	// Root tunnel ownership remains with the watchdog.
+	p.Close()
 }
 
 func TestParseLatestHandshake(t *testing.T) {
@@ -507,11 +532,7 @@ func TestWireguardProbe_Check_InvalidMaxAgeFromTunnel(t *testing.T) {
 	}
 
 	// No Config on probe, should fallback to tunnel
-	p := &WireguardProbe{
-		tunnel:   tunnel,
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
-	}
+	p := &WireguardProbe{tunnel: tunnel}
 
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
@@ -539,11 +560,7 @@ func TestWireguardProbe_Check_TunnelConfigFallbackValid(t *testing.T) {
 	}
 
 	// No Config on probe, should fallback to tunnel and succeed
-	p := &WireguardProbe{
-		tunnel:   tunnel,
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
-	}
+	p := &WireguardProbe{tunnel: tunnel}
 
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
@@ -563,15 +580,14 @@ func TestWireguardProbe_Check_ZeroHandshakeWithTunnel(t *testing.T) {
 	tunnel := &tunnels.MockTunnel{
 		IsStabilizedResult: true,
 		ReportFailureFunc:  func() { failureCalled = true },
+		DeviceFunc:         func() tunnels.WGDevice { return mock },
 	}
 
 	p := &WireguardProbe{
 		Config: &config.WireguardConfig{
 			MaxAge: "5m",
 		},
-		tunnel:   tunnel,
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
+		tunnel: tunnel,
 	}
 
 	res, err := p.Check(context.Background(), "")
@@ -599,13 +615,10 @@ func TestWireguardProbe_Check_MaxAgeZero(t *testing.T) {
 	}
 	tunnel := &tunnels.MockTunnel{
 		IsStabilizedResult: true,
+		DeviceFunc:         func() tunnels.WGDevice { return mock },
 	}
 
-	p := &WireguardProbe{
-		tunnel:   tunnel,
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
-	}
+	p := &WireguardProbe{tunnel: tunnel}
 
 	res, err := p.Check(context.Background(), "")
 	if err != nil {
@@ -628,15 +641,14 @@ func TestWireguardProbe_Check_ParseErrorWithTunnel(t *testing.T) {
 	tunnel := &tunnels.MockTunnel{
 		IsStabilizedResult: true,
 		ReportFailureFunc:  func() { failureCalled = true },
+		DeviceFunc:         func() tunnels.WGDevice { return mock },
 	}
 
 	p := &WireguardProbe{
 		Config: &config.WireguardConfig{
 			MaxAge: "5m",
 		},
-		tunnel:   tunnel,
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
+		tunnel: tunnel,
 	}
 
 	res, err := p.Check(context.Background(), "")
@@ -671,15 +683,14 @@ func TestWireguardProbe_Check_StaleHandshakeWithTunnel(t *testing.T) {
 	tunnel := &tunnels.MockTunnel{
 		IsStabilizedResult: true,
 		ReportFailureFunc:  func() { failureCalled = true },
+		DeviceFunc:         func() tunnels.WGDevice { return mock },
 	}
 
 	p := &WireguardProbe{
 		Config: &config.WireguardConfig{
 			MaxAge: "5m",
 		},
-		tunnel:   tunnel,
-		dev:      mock,
-		initTime: time.Now().Add(-1 * time.Hour),
+		tunnel: tunnel,
 	}
 
 	res, err := p.Check(context.Background(), "")

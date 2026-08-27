@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-//go:fix inline
-func ptrInt(i int) *int {
-	return new(i)
-}
-
 func TestLoadConfig(t *testing.T) {
 	// Create a temporary config file
 	content := `

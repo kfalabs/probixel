@@ -238,8 +238,28 @@ func TestSetupWireguardWindows_WithRealWireguardTunnel(t *testing.T) {
 
 	SetupWireguardWindows(cfg, registry)
 
-	// Verify success window was set
-	// The success window should be (60s * 3) + 60s = 240s
+	if got, want := wgTun.SuccessWindow(), 4*time.Minute; got != want {
+		t.Errorf("success window = %v, want %v", got, want)
+	}
+}
+
+func TestSetupWireguardWindows_UsesGlobalDefaultForEmptyServiceInterval(t *testing.T) {
+	cfg := &config.Config{
+		Global: config.GlobalConfig{DefaultInterval: "2m"},
+		Tunnels: map[string]config.TunnelConfig{
+			"wg0": {Type: "wireguard", Wireguard: &config.WireguardConfig{}},
+		},
+		Services: []config.Service{{Name: "svc", Tunnel: "wg0"}},
+	}
+	registry := tunnels.NewRegistry()
+	wgTun := tunnels.NewWireguardTunnel("wg0", cfg.Tunnels["wg0"].Wireguard)
+	_ = registry.Register(wgTun)
+
+	SetupWireguardWindows(cfg, registry)
+
+	if got, want := wgTun.SuccessWindow(), 3*time.Minute; got != want {
+		t.Errorf("success window = %v, want %v", got, want)
+	}
 }
 
 func TestSetupProbe_FullConfiguration(t *testing.T) {

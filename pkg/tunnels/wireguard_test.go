@@ -3,7 +3,9 @@ package tunnels
 import (
 	"context"
 	"fmt"
+	"net"
 	"probixel/pkg/config"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -446,22 +448,126 @@ func TestWireguardTunnel_ReportFailure_OnlySuccessHealthy(t *testing.T) {
 
 func TestWireguardTunnel_ReportFailure_NeitherHealthy_Restart(t *testing.T) {
 	now := time.Now()
-	mock := &mockDevice{
+	failed := &mockDevice{
 		uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", now.Add(-10*time.Minute).Unix()),
 	}
+	recovered := &mockDevice{}
 	w := NewWireguardTunnel("rf-restart", &config.WireguardConfig{})
-	w.dev = mock
+	w.dev = failed
 	w.initTime = now.Add(-10 * time.Minute)
 	w.lastSuccessTime = now.Add(-10 * time.Minute)
 	w.successWindow = 1 * time.Minute
+	w.SetDeviceFactory(func() (WGDevice, *netstack.Net, error) {
+		return recovered, nil, nil
+	})
 
 	w.ReportFailure()
 
-	if w.dev != nil {
-		t.Error("device should have been stopped (neither healthy)")
+	if w.Device() != recovered {
+		t.Error("expected tunnel to be re-initialized after restart")
 	}
-	if !mock.closed {
+	if !failed.closed {
 		t.Error("expected device to be closed")
+	}
+	w.Stop()
+}
+
+func TestWireguardTunnel_SupervisorRetriesInitialization(t *testing.T) {
+	w := NewWireguardTunnel("supervisor-retry", &config.WireguardConfig{})
+	w.supervisorInterval = 5 * time.Millisecond
+	w.supervisorInitialBackoff = 5 * time.Millisecond
+	w.supervisorMaxBackoff = 10 * time.Millisecond
+
+	var attempts atomic.Int32
+	recovered := &mockDevice{}
+	w.SetDeviceFactory(func() (WGDevice, *netstack.Net, error) {
+		if attempts.Add(1) < 3 {
+			return nil, nil, fmt.Errorf("temporary initialization failure")
+		}
+		return recovered, nil, nil
+	})
+
+	w.StartSupervisor(context.Background())
+	defer w.Stop()
+
+	deadline := time.After(500 * time.Millisecond)
+	for w.Device() != recovered {
+		select {
+		case <-deadline:
+			t.Fatalf("supervisor did not recover tunnel after %d attempts", attempts.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if attempts.Load() < 3 {
+		t.Fatalf("expected at least three initialization attempts, got %d", attempts.Load())
+	}
+}
+
+func TestWireguardTunnel_SupervisorRestartsStaleTunnelWithoutProbeTraffic(t *testing.T) {
+	stale := &mockDevice{uapi: fmt.Sprintf("last_handshake_time_sec=%d\n", time.Now().Add(-10*time.Minute).Unix())}
+	recovered := &mockDevice{}
+	w := NewWireguardTunnel("supervisor-stale", &config.WireguardConfig{})
+	w.supervisorInterval = 5 * time.Millisecond
+	w.supervisorInitialBackoff = 5 * time.Millisecond
+	w.supervisorMaxBackoff = 10 * time.Millisecond
+
+	var attempts atomic.Int32
+	w.SetDeviceFactory(func() (WGDevice, *netstack.Net, error) {
+		if attempts.Add(1) == 1 {
+			return stale, nil, nil
+		}
+		return recovered, nil, nil
+	})
+	if err := w.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.initTime = time.Now().Add(-10 * time.Minute)
+	w.lastSuccessTime = time.Now().Add(-10 * time.Minute)
+	w.successWindow = time.Millisecond
+	w.mu.Unlock()
+
+	w.StartSupervisor(context.Background())
+	defer w.Stop()
+
+	deadline := time.After(500 * time.Millisecond)
+	for w.Device() != recovered {
+		select {
+		case <-deadline:
+			t.Fatal("supervisor did not restart stale tunnel")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if !stale.closed {
+		t.Fatal("expected stale device to be closed")
+	}
+}
+
+func TestWireguardTunnel_ResolveEndpointFallsBackToLastSuccessfulAddress(t *testing.T) {
+	w := NewWireguardTunnel("cached-endpoint", &config.WireguardConfig{Endpoint: "vpn.example:51820"})
+	resolved := &net.UDPAddr{IP: net.ParseIP("192.0.2.10"), Port: 51820}
+	var calls atomic.Int32
+	w.endpointResolver = func(context.Context, string) (*net.UDPAddr, error) {
+		if calls.Add(1) == 1 {
+			return resolved, nil
+		}
+		return nil, fmt.Errorf("DNS temporarily unavailable")
+	}
+
+	first, err := w.resolveEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.String() != resolved.String() {
+		t.Fatalf("first resolution = %s, want %s", first, resolved)
+	}
+
+	fallback, err := w.resolveEndpoint()
+	if err != nil {
+		t.Fatalf("cached endpoint should survive DNS failure: %v", err)
+	}
+	if fallback.String() != resolved.String() {
+		t.Fatalf("fallback resolution = %s, want %s", fallback, resolved)
 	}
 }
 
@@ -613,13 +719,8 @@ func TestWireguardTunnel_ReportFailure_DeviceBecomesNilDuringPhase2(t *testing.T
 	w.lastSuccessTime = now.Add(-10 * time.Minute)
 	w.successWindow = 1 * time.Minute
 
-	// Simulate another goroutine stopping the device concurrently.
-	// We'll replace dev with a different mock to trigger the t.dev != dev check.
-	otherMock := &mockDevice{uapi: ""}
-	// Set dev to otherMock so that when ReportFailure re-acquires the lock,
-	// t.dev != dev (the captured dev) and it returns early.
-	// We need to do this after phase 1 but before phase 3. Since we can't
-	// interleave precisely, we test the nil path instead.
+	// Since this test cannot reliably interleave a concurrent device swap
+	// between ReportFailure's lock phases, it exercises the nil-device path.
 	w.dev = nil
 
 	// Should not panic when dev is nil at phase 1
@@ -627,18 +728,16 @@ func TestWireguardTunnel_ReportFailure_DeviceBecomesNilDuringPhase2(t *testing.T
 	w2.dev = nil
 	w2.ReportFailure() // Should return immediately
 
-	// Now test the dev != dev path by swapping after capture
+	// Keep a non-nil device for the stale-handshake restart path.
 	w3 := NewWireguardTunnel("toctou-swap", &config.WireguardConfig{})
 	w3.dev = mock
 	w3.initTime = now.Add(-10 * time.Minute)
 	w3.lastSuccessTime = now.Add(-10 * time.Minute)
 	w3.successWindow = 1 * time.Minute
 
-	// Replace device with otherMock just before calling ReportFailure
 	// The IpcGet on mock will return stale handshake, triggering restart path.
 	// But since we can't inject between phases, we verify that the code
 	// handles this via the factory.
-	_ = otherMock
 }
 
 func TestWireguardTunnel_ReportFailure_FallbackToInitTime(t *testing.T) {
