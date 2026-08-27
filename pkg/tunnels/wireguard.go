@@ -74,6 +74,10 @@ func (t *WireguardTunnel) Name() string { return t.name }
 func (t *WireguardTunnel) Type() string { return "wireguard" }
 
 func (t *WireguardTunnel) Initialize() error {
+	return t.initialize(context.Background())
+}
+
+func (t *WireguardTunnel) initialize(ctx context.Context) error {
 	t.mu.RLock()
 	if t.dev != nil {
 		t.mu.RUnlock()
@@ -88,7 +92,7 @@ func (t *WireguardTunnel) Initialize() error {
 			return err
 		}
 		var err error
-		resolvedEndpoint, err = t.resolveEndpoint()
+		resolvedEndpoint, err = t.resolveEndpoint(ctx)
 		if err != nil {
 			return err
 		}
@@ -223,7 +227,7 @@ func resolveWireguardEndpoint(ctx context.Context, endpoint string) (*net.UDPAdd
 		return nil, fmt.Errorf("invalid wireguard endpoint %q: %w", endpoint, err)
 	}
 
-	portNumber, err := net.LookupPort("udp", port)
+	portNumber, err := net.DefaultResolver.LookupPort(ctx, "udp", port)
 	if err != nil {
 		return nil, fmt.Errorf("invalid wireguard endpoint port %q: %w", port, err)
 	}
@@ -254,14 +258,14 @@ func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
 
 // resolveEndpoint bounds DNS resolution and retains the last good result so a
 // temporary DNS outage cannot turn a restart into a permanently dead tunnel.
-func (t *WireguardTunnel) resolveEndpoint() (*net.UDPAddr, error) {
+func (t *WireguardTunnel) resolveEndpoint(ctx context.Context) (*net.UDPAddr, error) {
 	t.mu.RLock()
 	resolver := t.endpointResolver
 	endpoint := t.cfg.Endpoint
 	cached := cloneUDPAddr(t.lastResolvedEndpoint)
 	t.mu.RUnlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	resolved, err := resolver(ctx, endpoint)
 	if err == nil {
@@ -463,7 +467,7 @@ func (t *WireguardTunnel) runSupervisor(ctx context.Context) {
 			return
 		}
 
-		if t.superviseOnce() {
+		if t.superviseOnce(ctx) {
 			backoff = t.supervisorInitialBackoff
 			delay = t.supervisorInterval
 			continue
@@ -498,10 +502,10 @@ func waitForSupervisor(ctx context.Context, delay time.Duration) bool {
 
 // superviseOnce attempts an unavailable tunnel, or restarts one whose
 // handshake and service-success signals are both stale.
-func (t *WireguardTunnel) superviseOnce() bool {
+func (t *WireguardTunnel) superviseOnce(ctx context.Context) bool {
 	snapshot := t.healthSnapshot()
 	if snapshot.dev == nil {
-		if err := t.Initialize(); err != nil {
+		if err := t.initialize(ctx); err != nil {
 			t.logSupervisorState("retrying", "[Tunnel:%s] Supervisor initialization failed: %v; retrying with backoff", t.name, err)
 			return false
 		}
@@ -516,7 +520,7 @@ func (t *WireguardTunnel) superviseOnce() bool {
 	}
 
 	t.logSupervisorState("restarting", "[Tunnel:%s] Supervisor restarting stale tunnel", t.name)
-	if err := t.Initialize(); err != nil {
+	if err := t.initialize(ctx); err != nil {
 		t.logSupervisorState("retrying", "[Tunnel:%s] Supervisor restart failed: %v; retrying with backoff", t.name, err)
 		return false
 	}
@@ -545,7 +549,7 @@ func (t *WireguardTunnel) DialContext(ctx context.Context, network, address stri
 
 	if netst == nil {
 		// Attempt re-initialization
-		if err := t.Initialize(); err != nil {
+		if err := t.initialize(ctx); err != nil {
 			return nil, fmt.Errorf("wireguard tunnel %q re-init failed: %w", t.name, err)
 		}
 		t.mu.RLock()

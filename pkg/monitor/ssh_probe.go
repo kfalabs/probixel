@@ -130,7 +130,7 @@ func (p *SSHProbe) checkOne(ctx context.Context, target string) Result {
 	sshConfig := &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // Monitoring agent needs to connect to many hosts without pre-managed known_hosts
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // G106: monitoring targets do not require a pre-managed known_hosts file.
 		Timeout:         timeout,
 	}
 

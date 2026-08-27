@@ -103,6 +103,8 @@ Multiple targets use `target_mode: any` by default, or `all` when every target m
 ## Go and concurrency conventions
 
 - Run `gofmt` on every changed Go file and use normal Go naming and `%w` error wrapping.
+- Fix `golangci-lint` findings in code; do not silence them with `nolint` or broad config exclusions unless the behavior is intentional and no safe implementation alternative exists.
+- Any necessary `nolint` must name the affected linter/rule and explain the specific reason it is safe.
 - Pass `context.Context` to blocking operations and honor cancellation promptly.
 - Keep mutex critical sections short; never hold one across DNS resolution, device IPC, dialing, or blocking work.
 - For read-then-act changes, snapshot under lock, do blocking work outside it, then reacquire and verify the snapshot still applies.
@@ -134,4 +136,5 @@ Run before handing off:
 go test ./...
 go test ./... -race -count=3
 go vet ./...
+golangci-lint run ./...
 ```

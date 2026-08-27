@@ -185,7 +185,7 @@ services:
 `, udpPort, ts.URL)
 
 	// Write updated config
-	if err := os.WriteFile(configFile.Name(), []byte(updatedConfig), 0644); err != nil { //nolint:gosec // G306: Test file permissions
+	if err := os.WriteFile(configFile.Name(), []byte(updatedConfig), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1746,7 +1746,7 @@ services:
       success:
         url: "%s"
 `
-	if err := os.WriteFile(configPath, fmt.Appendf(nil, newCfgStr, MockAlertServerURL), 0644); err != nil { //nolint:gosec
+	if err := os.WriteFile(configPath, fmt.Appendf(nil, newCfgStr, MockAlertServerURL), 0644); err != nil {
 		t.Fatal(err)
 	}
 

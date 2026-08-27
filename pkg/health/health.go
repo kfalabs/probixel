@@ -30,7 +30,8 @@ func WritePIDFile(path string) error {
 
 // CheckHealth checks if a process with the PID recorded in pidFile is running.
 func CheckHealth(pidFile string) {
-	data, err := os.ReadFile(pidFile) //nolint:gosec // G304: Reading internal PID file
+	pidFile = filepath.Clean(pidFile)
+	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		fmt.Printf("Health check failed: could not read PID file: %v\n", err)
 		os.Exit(1)

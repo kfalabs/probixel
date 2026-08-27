@@ -30,7 +30,7 @@ func NewPusher() *Pusher {
 		Client: &http.Client{Timeout: 10 * time.Second},
 		insecureClient: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: used only for endpoints explicitly configured to skip verification.
 			},
 			Timeout: 10 * time.Second,
 		},
@@ -218,8 +218,8 @@ func (p *Pusher) Push(ctx context.Context, serviceName string, result monitor.Re
 		}
 
 		if attempt > 0 {
-			shift := min(attempt-1, 62)                                       //nolint:gosec // G115: shift is bounded [0,62] by min()
-			backoff := time.Duration(1<<uint(shift)) * 500 * time.Millisecond //nolint:gosec // G115: shift is bounded [0,62] by min()
+			shift := min(attempt-1, 62)
+			backoff := time.Duration(1<<uint(shift)) * 500 * time.Millisecond
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():

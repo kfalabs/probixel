@@ -157,7 +157,7 @@ func (p *TLSProbe) checkTarget(ctx context.Context, target string, threshold tim
 	}
 
 	conn := tls.Client(rawConn, &tls.Config{
-		InsecureSkipVerify: p.InsecureSkipVerify, // nolint:gosec // deliberate feature
+		InsecureSkipVerify: p.InsecureSkipVerify, //nolint:gosec // G402: explicit per-probe configuration feature.
 		ServerName:         host,
 	})
 	if err := conn.HandshakeContext(dialCtx); err != nil {

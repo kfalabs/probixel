@@ -44,7 +44,7 @@ type statusRange struct {
 func (p *HTTPProbe) getClient() *http.Client {
 	p.clientOnce.Do(func() {
 		tr := &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: p.InsecureSkipVerify}, //nolint:gosec
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: p.InsecureSkipVerify}, //nolint:gosec // G402: explicit per-probe configuration feature.
 			DialContext:     p.DialContext,
 		}
 		timeout := p.Timeout

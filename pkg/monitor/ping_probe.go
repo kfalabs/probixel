@@ -236,8 +236,8 @@ func (p *PingProbe) pingRemoteSSH(ctx context.Context, sshTunnel *tunnels.SSHTun
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
-	name, args := getPingArgs("linux", target, timeout) // SSH usually targets Linux/Unix
-	cmd := fmt.Sprintf("%s %s", name, strings.Join(args, " "))
+	args := getPingArgs("linux", target, timeout) // SSH usually targets Linux/Unix
+	cmd := fmt.Sprintf("ping %s", strings.Join(args, " "))
 
 	// Execute remote ping
 	output, err := session.CombinedOutput(cmd)
@@ -315,16 +315,16 @@ func (p *PingProbe) pingBuiltin(ctx context.Context, target string) (time.Durati
 	}
 }
 
-func getPingArgs(goos, target string, timeout time.Duration) (string, []string) {
+func getPingArgs(goos, target string, timeout time.Duration) []string {
 	timeoutSec := int(timeout.Seconds())
 	if timeoutSec == 0 {
 		timeoutSec = 5
 	}
 
 	if goos == "windows" {
-		return "ping", []string{"-n", "1", "-w", strconv.Itoa(timeoutSec * 1000), target}
+		return []string{"-n", "1", "-w", strconv.Itoa(timeoutSec * 1000), target}
 	}
-	return "ping", []string{"-c", "1", "-W", strconv.Itoa(timeoutSec), target}
+	return []string{"-c", "1", "-W", strconv.Itoa(timeoutSec), target}
 }
 
 func parsePingTime(output string) (time.Duration, error) {

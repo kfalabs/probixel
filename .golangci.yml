@@ -4,20 +4,26 @@ run:
   timeout: 5m
   tests: true
   modules-download-mode: readonly
+  build-tags:
+    - development
+    - migration
+    - openapi
 
 linters:
   enable:
-    - bodyclose     # Check for unclosed http responses
-    - errcheck      # Check for unchecked errors
-    - govet         # Vet examines Go source code
-    - ineffassign   # Detect ineffectual assignments
-    - nestif        # Detect nested if statements that can be flattened
-    - noctx         # Detect passing http.Request.Context() or http.ResponseWriter without custom context
-    - staticcheck   # Static analysis
-    - unused        # Check for unused code
-    - misspell      # Check for misspelled words
-    - gosec         # Security-focused linter
-    - revive        # Fast and drop-in replacement for golint
+    - bodyclose
+    - contextcheck
+    - errcheck
+    - govet
+    - ineffassign
+    - gosec
+    - nestif
+    - noctx
+    - revive
+    - staticcheck
+    - unparam
+    - unused
+    - misspell
   settings:
     errcheck:
       check-type-assertions: false
@@ -25,24 +31,28 @@ linters:
       exclude-functions:
         - (io.ReadCloser).Close
         - (io.Closer).Close
+    gosec:
+      excludes:
+        - G104 # unchecked errors are covered by errcheck
+        - G115 # integer overflow on terminal fd / uint conversions
+        - G117 # exported config struct fields named Password/Secret
+    govet:
+      disable:
+        - fieldalignment
+        - shadow
+      enable-all: true
     revive:
       rules:
         - name: exported
           severity: warning
           disabled: true
-    govet:
-      disable:
-        - fieldalignment
-    gosec:
-      # G104 is often too noisy as it flags every unchecked error which errcheck already handles
-      excludes:
-        - G104
   exclusions:
+    generated: lax
     rules:
-      - path: _test\.go
-        linters:
+      - linters:
           - errcheck
           - gosec
+        path: _test\.go
       - linters:
           - staticcheck
         text: "SA9003:"
@@ -55,5 +65,13 @@ linters:
       - examples$
 
 issues:
-  max-issues-per-linter: 50
-  max-same-issues: 3
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

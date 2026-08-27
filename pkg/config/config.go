@@ -559,16 +559,16 @@ func validateEndpointURL(urlStr string) error {
 }
 
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: Config file path from command line flag is expected
+	cleanPath := filepath.Clean(path)
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, err
 	}
 
-	cleanPath := filepath.Clean(path)
-	if info, err := os.Stat(cleanPath); err == nil { //nolint:gosec // G703: path is from CLI flag, filepath.Clean applied
+	if info, err := os.Stat(cleanPath); err == nil {
 		if info.Mode().Perm()&0077 != 0 {
 			perm := fmt.Sprintf("%04o", info.Mode().Perm())
-			log.Printf("WARNING: Config file %s has insecure permissions %s. Recommend chmod 600.", cleanPath, perm) //nolint:gosec // G706: path from CLI flag, sanitized via filepath.Clean
+			log.Printf("WARNING: Config file %s has insecure permissions %s. Recommend chmod 600.", cleanPath, perm)
 		}
 	}
 

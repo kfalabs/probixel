@@ -39,13 +39,13 @@ func TestConfigState_ThreadSafety(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Multiple writers
-	for i := range 100 {
+	for range 100 {
 		wg.Add(1)
-		go func(val int) {
+		go func() {
 			defer wg.Done()
 			// Use unique values to ensure race detector works hard
 			state.Set(&config.Config{Global: config.GlobalConfig{DefaultInterval: "1s"}})
-		}(i)
+		}()
 	}
 
 	// Multiple readers

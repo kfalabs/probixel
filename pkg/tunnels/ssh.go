@@ -110,7 +110,7 @@ func (t *SSHTunnel) GetClient(ctx context.Context) (*ssh.Client, error) {
 	// Create new client
 	sshConfig := &ssh.ClientConfig{
 		User:            t.cfg.User,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // G106: tunnel config has no known_hosts source; callers opt into this transport.
 		Timeout:         10 * time.Second,
 	}
 

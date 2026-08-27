@@ -554,7 +554,7 @@ func TestWireguardTunnel_ResolveEndpointFallsBackToLastSuccessfulAddress(t *test
 		return nil, fmt.Errorf("DNS temporarily unavailable")
 	}
 
-	first, err := w.resolveEndpoint()
+	first, err := w.resolveEndpoint(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestWireguardTunnel_ResolveEndpointFallsBackToLastSuccessfulAddress(t *test
 		t.Fatalf("first resolution = %s, want %s", first, resolved)
 	}
 
-	fallback, err := w.resolveEndpoint()
+	fallback, err := w.resolveEndpoint(context.Background())
 	if err != nil {
 		t.Fatalf("cached endpoint should survive DNS failure: %v", err)
 	}

@@ -166,19 +166,15 @@ func TestGetPingArgs(t *testing.T) {
 	tests := []struct {
 		goos     string
 		target   string
-		wantName string
 		wantArgs []string
 	}{
-		{"windows", "1.2.3.4", "ping", []string{"-n", "1", "-w", "5000", "1.2.3.4"}},
-		{"linux", "1.2.3.4", "ping", []string{"-c", "1", "-W", "5", "1.2.3.4"}},
-		{"darwin", "1.2.3.4", "ping", []string{"-c", "1", "-W", "5", "1.2.3.4"}},
+		{"windows", "1.2.3.4", []string{"-n", "1", "-w", "5000", "1.2.3.4"}},
+		{"linux", "1.2.3.4", []string{"-c", "1", "-W", "5", "1.2.3.4"}},
+		{"darwin", "1.2.3.4", []string{"-c", "1", "-W", "5", "1.2.3.4"}},
 	}
 
 	for _, tt := range tests {
-		name, args := getPingArgs(tt.goos, tt.target, 0)
-		if name != tt.wantName {
-			t.Errorf("getPingArgs(%s) name = %v, want %v", tt.goos, name, tt.wantName)
-		}
+		args := getPingArgs(tt.goos, tt.target, 0)
 		if len(args) != len(tt.wantArgs) {
 			t.Errorf("getPingArgs(%s) args len = %v, want %v", tt.goos, len(args), len(tt.wantArgs))
 		}
