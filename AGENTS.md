@@ -130,6 +130,6 @@ Run before handing off:
 
 ```sh
 go test ./...
-go test ./... -race
+go test ./... -race -count=3
 go vet ./...
 ```
